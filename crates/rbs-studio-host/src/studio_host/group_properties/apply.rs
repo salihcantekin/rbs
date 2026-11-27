@@ -1,4 +1,4 @@
-//! `group.get` and `group.apply` (protocol 1.108, ADR-0184, ADR-0193): every check
+//! `group.get` and `group.apply` (protocol 1.111, ADR-0184, ADR-0193): every check
 //! runs on the control thread before any state changes, and a saved change is one
 //! undo step; the live Scroll operations act on the studio's run and are not undoable.
 //! Routed by `control_api/api_group.rs`.

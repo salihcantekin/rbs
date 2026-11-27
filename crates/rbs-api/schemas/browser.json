@@ -1,0 +1,403 @@
+{
+  "browser.forget_sign_in": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`browser.forget_sign_in` (protocol 1.96, ADR-0132 decision 10): deletes the kept\nprofile of a browser source that keeps signed in. Cannot be undone.",
+      "properties": {
+        "restart": {
+          "description": "Restart a running page with the new profile instead of answering `busy`\n(protocol 1.101, ADR-0168 decision 3).",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The browser source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "BrowserForgetSignIn",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "browser.input": {
+    "input_schema": {
+      "$defs": {
+        "BrowserInputEvent": {
+          "description": "One event of `browser.input`. Coordinates are page pixels, `0..width` and\n`0..height` of the source's page.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "The pointer moved to `x`, `y`.",
+              "properties": {
+                "held": {
+                  "description": "Held mouse buttons, which a drag inside the page needs (protocol 1.101).",
+                  "items": {
+                    "$ref": "#/$defs/BrowserMouseButton"
+                  },
+                  "type": "array"
+                },
+                "modifiers": {
+                  "$ref": "#/$defs/BrowserModifiers",
+                  "default": {},
+                  "description": "Held modifiers."
+                },
+                "type": {
+                  "const": "move",
+                  "type": "string"
+                },
+                "x": {
+                  "description": "Page x.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "y": {
+                  "description": "Page y.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "The pointer left the page.",
+              "properties": {
+                "held": {
+                  "description": "Held mouse buttons (protocol 1.101).",
+                  "items": {
+                    "$ref": "#/$defs/BrowserMouseButton"
+                  },
+                  "type": "array"
+                },
+                "modifiers": {
+                  "$ref": "#/$defs/BrowserModifiers",
+                  "description": "Held modifiers (protocol 1.101)."
+                },
+                "type": {
+                  "const": "leave",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A button went down or up at `x`, `y`; `clicks` counts a double click as 2.",
+              "properties": {
+                "button": {
+                  "$ref": "#/$defs/BrowserMouseButton",
+                  "description": "Which button."
+                },
+                "clicks": {
+                  "default": 1,
+                  "description": "1 for a click, 2 for a double click, 3 for a triple click.",
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "down": {
+                  "description": "Pressed (true) or released.",
+                  "type": "boolean"
+                },
+                "modifiers": {
+                  "$ref": "#/$defs/BrowserModifiers",
+                  "default": {},
+                  "description": "Held modifiers."
+                },
+                "type": {
+                  "const": "button",
+                  "type": "string"
+                },
+                "x": {
+                  "description": "Page x.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "y": {
+                  "description": "Page y.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y",
+                "button",
+                "down"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "The wheel turned at `x`, `y` by `dx`, `dy` pixels (positive `dy` scrolls up).",
+              "properties": {
+                "dx": {
+                  "default": 0,
+                  "description": "Horizontal pixels.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "dy": {
+                  "default": 0,
+                  "description": "Vertical pixels.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "modifiers": {
+                  "$ref": "#/$defs/BrowserModifiers",
+                  "default": {},
+                  "description": "Held modifiers."
+                },
+                "type": {
+                  "const": "wheel",
+                  "type": "string"
+                },
+                "x": {
+                  "description": "Page x.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "y": {
+                  "description": "Page y.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A key went down or up. `key` is a key name of the DOM `KeyboardEvent.key`\nlist that has no text (`Enter`, `Tab`, `Backspace`, `Escape`, `Delete`,\n`Insert`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowLeft`, `ArrowRight`,\n`ArrowUp`, `ArrowDown`, `F1` to `F12`), or one character for a shortcut\n(`a` with `ctrl`). Text is typed with `text`.",
+              "properties": {
+                "down": {
+                  "description": "Pressed (true) or released.",
+                  "type": "boolean"
+                },
+                "key": {
+                  "description": "The key.",
+                  "type": "string"
+                },
+                "modifiers": {
+                  "$ref": "#/$defs/BrowserModifiers",
+                  "default": {},
+                  "description": "Held modifiers."
+                },
+                "type": {
+                  "const": "key",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "key",
+                "down"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Typed text, as the keyboard and input method produced it.",
+              "properties": {
+                "text": {
+                  "description": "The characters.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "BrowserModifiers": {
+          "additionalProperties": false,
+          "description": "Modifier keys held during a [`BrowserInputEvent`]; absent fields are false.",
+          "properties": {
+            "alt": {
+              "description": "Alt (Option on macOS).",
+              "type": "boolean"
+            },
+            "ctrl": {
+              "description": "Control.",
+              "type": "boolean"
+            },
+            "meta": {
+              "description": "The Windows key or Command.",
+              "type": "boolean"
+            },
+            "shift": {
+              "description": "Shift.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "BrowserMouseButton": {
+          "description": "A mouse button of [`BrowserInputEvent::Button`].",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "The primary button.",
+              "type": "string"
+            },
+            {
+              "const": "middle",
+              "description": "The wheel button.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "The secondary button.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`browser.input` (protocol 1.96, ADR-0132 decisions 6 and 9): pointer, wheel, key\nand text events for a browser source's running page, in page pixels.",
+      "properties": {
+        "events": {
+          "description": "The events, in order; at most [`BrowserInput::MAX_EVENTS`].",
+          "items": {
+            "$ref": "#/$defs/BrowserInputEvent"
+          },
+          "type": "array"
+        },
+        "source": {
+          "description": "The browser source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "events"
+      ],
+      "title": "BrowserInput",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "browser.reload": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`browser.reload` (protocol 1.91, ADR-0132 decision 5): reloads a browser source's\nrunning page without a new process.",
+      "properties": {
+        "bypass_cache": {
+          "default": false,
+          "description": "Load again from the network, not the cache.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The browser source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "BrowserReload",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "browser.run_script": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`browser.run_script` (protocol 1.91, ADR-0149 decision 7): runs `script`, or the\nsaved script when absent, once in the running page, on the saved origin only.",
+      "properties": {
+        "script": {
+          "description": "The script to run; absent for the saved one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The browser source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "BrowserRunScript",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

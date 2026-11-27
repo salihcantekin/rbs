@@ -8,6 +8,7 @@ use super::serde_defaults::*;
 /// Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the
 /// box's own frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ScrollDirection {
     /// Right to left, like a news ticker.
@@ -23,6 +24,7 @@ pub enum ScrollDirection {
 
 /// How often a scrolling picture crosses its box (ADR-0150).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ScrollRepeat {
     /// Copies follow each other forever.
@@ -34,6 +36,7 @@ pub enum ScrollRepeat {
 
 /// Where a scroll run starts (ADR-0150).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ScrollStart {
     /// Where the picture is placed without a scroll.
@@ -46,6 +49,7 @@ pub enum ScrollStart {
 /// What a scroll's run does when a shown scene draws its item again (protocol 1.99,
 /// ADR-0152 decision 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ScrollReturn {
     /// Starts over.
@@ -59,6 +63,7 @@ pub enum ScrollReturn {
 /// speed in the item's box units (canvas pixels for an item on the canvas); defaults
 /// are left out.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ItemScroll {
     /// Which way it moves (`left`).

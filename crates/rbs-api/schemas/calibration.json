@@ -1,0 +1,655 @@
+{
+  "calibration.cancel": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "calibration.run": {
+    "input_schema": {
+      "$defs": {
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`calibration.run` (protocol 1.55, ADR-0087 decision 4).",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvas; the main one when absent or `null`. `all` is `invalid_params`:\none canvas per run."
+        },
+        "profile": {
+          "description": "The recording profile whose plan is measured (`output.profiles`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile"
+      ],
+      "title": "CalibrationRun",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "calibration.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "CalibrationClass": {
+          "description": "A class of video encodes (protocol 1.55).",
+          "properties": {
+            "codec": {
+              "description": "Codec name.",
+              "type": "string"
+            },
+            "fps": {
+              "description": "Frame-rate class (`30`, `60`, `above-60`).",
+              "type": "string"
+            },
+            "rate": {
+              "description": "Rate-control class (`cbr`, `vbr`, `cq`).",
+              "type": "string"
+            },
+            "size": {
+              "description": "Size class (`720`, `1080`, `1440`, `2160`, `above-2160`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "codec",
+            "size",
+            "fps",
+            "rate"
+          ],
+          "type": "object"
+        },
+        "CalibrationCode": {
+          "description": "A code of `calibration.state` (protocol 1.55, ADR-0087 decision 4): why a series\nor the write has no full result, or why a run failed. A client reads an unknown\ncode as `other`.",
+          "oneOf": [
+            {
+              "const": "unsupported",
+              "description": "The adapter does not support the class.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "No free session at the first open: other programs may hold them.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "A session did not open.",
+              "type": "string"
+            },
+            {
+              "const": "encode_failed",
+              "description": "An encode failed.",
+              "type": "string"
+            },
+            {
+              "const": "no_room",
+              "description": "The folder has no room for the write test.",
+              "type": "string"
+            },
+            {
+              "const": "write_failed",
+              "description": "The write test failed.",
+              "type": "string"
+            },
+            {
+              "const": "time_limit",
+              "description": "The run's time ended it first.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "A cancel ended it first.",
+              "type": "string"
+            },
+            {
+              "const": "device_lost",
+              "description": "A device was lost: nothing was written.",
+              "type": "string"
+            },
+            {
+              "const": "panicked",
+              "description": "The run panicked.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The run ended without an answer.",
+              "type": "string"
+            },
+            {
+              "const": "hung",
+              "description": "The run did not answer by its deadline.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "CalibrationEncoder": {
+          "description": "One series' result in `calibration.state` (protocol 1.55).",
+          "properties": {
+            "adapter": {
+              "description": "Adapter id.",
+              "type": "string"
+            },
+            "codec": {
+              "description": "Codec name.",
+              "type": "string"
+            },
+            "fps": {
+              "description": "Frame-rate class (`30`, `60`, `above-60`).",
+              "type": "string"
+            },
+            "pixels_per_second": {
+              "description": "`sessions × width × height × fps`.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate": {
+              "description": "Rate-control class (`cbr`, `vbr`, `cq`).",
+              "type": "string"
+            },
+            "sessions": {
+              "description": "The highest passing session count.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "size": {
+              "description": "Size class (`720`, `1080`, `1440`, `2160`, `above-2160`).",
+              "type": "string"
+            },
+            "stopped_by": {
+              "$ref": "#/$defs/CalibrationStop",
+              "description": "Why the series stopped."
+            }
+          },
+          "required": [
+            "adapter",
+            "codec",
+            "size",
+            "fps",
+            "rate",
+            "sessions",
+            "pixels_per_second",
+            "stopped_by"
+          ],
+          "type": "object"
+        },
+        "CalibrationExport": {
+          "description": "One measured export class (protocol 1.57, ADR-0087 step D2).",
+          "properties": {
+            "format": {
+              "$ref": "#/$defs/CalibrationExportFormat",
+              "description": "The export format."
+            },
+            "gpu_us": {
+              "description": "The GPU's sustained time per export in microseconds, for diagnosis; judged by\nnothing. `null` with too few conversions.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kept_up": {
+              "description": "No conversion found every readback in flight and the frames arrived.",
+              "type": "boolean"
+            },
+            "size": {
+              "description": "Size class: `720`, `1080`, `1440`, `2160` or `above-2160`.",
+              "type": "string"
+            },
+            "time_us": {
+              "description": "The render thread's time of one export per frame, in microseconds (at least a\nframe period when it did not keep up).",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "size",
+            "format",
+            "time_us",
+            "gpu_us",
+            "kept_up"
+          ],
+          "type": "object"
+        },
+        "CalibrationExportCode": {
+          "description": "Why an export class has no result (protocol 1.57): its own closed list.",
+          "oneOf": [
+            {
+              "const": "gpu_unavailable",
+              "description": "No throwaway GPU device could be made.",
+              "type": "string"
+            },
+            {
+              "const": "export_failed",
+              "description": "The export could not be built or failed.",
+              "type": "string"
+            },
+            {
+              "const": "device_lost",
+              "description": "The throwaway device was lost; the run went on.",
+              "type": "string"
+            },
+            {
+              "const": "time_limit",
+              "description": "The time budget ended it first, or the GPU did not answer in time.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "A cancel ended it first.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "CalibrationExportFormat": {
+          "description": "The format of an export (protocol 1.57).",
+          "oneOf": [
+            {
+              "const": "nv12",
+              "description": "8-bit 4:2:0.",
+              "type": "string"
+            },
+            {
+              "const": "p010",
+              "description": "10-bit 4:2:0.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A format this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "CalibrationExportSkip": {
+          "description": "An export class with no result (protocol 1.57).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/CalibrationExportCode",
+              "description": "Why."
+            },
+            "format": {
+              "$ref": "#/$defs/CalibrationExportFormat",
+              "description": "The export format."
+            },
+            "size": {
+              "description": "Size class.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "size",
+            "format",
+            "code"
+          ],
+          "type": "object"
+        },
+        "CalibrationPart": {
+          "description": "The part of a calibration run that runs (protocol 1.55).",
+          "oneOf": [
+            {
+              "const": "encoder",
+              "description": "The encoder sessions.",
+              "type": "string"
+            },
+            {
+              "const": "write",
+              "description": "The folder write.",
+              "type": "string"
+            },
+            {
+              "const": "export",
+              "description": "The export of separate video files (protocol 1.57).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A part this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "CalibrationSkip": {
+          "description": "A part with no full result (protocol 1.55).",
+          "properties": {
+            "adapter": {
+              "description": "The series' adapter; absent for the write.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CalibrationClass"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The series' class; absent for the write."
+            },
+            "code": {
+              "$ref": "#/$defs/CalibrationCode",
+              "description": "Why."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "CalibrationState": {
+          "description": "`calibration.status` and the topic `calibration.state` (protocol 1.55, ADR-0087\ndecisions 4 and 7). No member carries a path.",
+          "oneOf": [
+            {
+              "description": "No run in this app run.",
+              "properties": {
+                "state": {
+                  "const": "idle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A run is active.",
+              "properties": {
+                "adapter": {
+                  "description": "The adapter measured now; `null` during the write.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cancelling": {
+                  "description": "A cancel was asked for and the run is ending.",
+                  "type": "boolean"
+                },
+                "part": {
+                  "$ref": "#/$defs/CalibrationPart",
+                  "description": "What runs now."
+                },
+                "state": {
+                  "const": "running",
+                  "type": "string"
+                },
+                "step": {
+                  "description": "Steps started so far.",
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "steps": {
+                  "description": "The upper bound of steps.",
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "state",
+                "step",
+                "steps",
+                "part",
+                "adapter",
+                "cancelling"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The last run ended; it stays until the next run.",
+              "properties": {
+                "cancelled": {
+                  "description": "A cancel ended it.",
+                  "type": "boolean"
+                },
+                "encoders": {
+                  "description": "The series' results.",
+                  "items": {
+                    "$ref": "#/$defs/CalibrationEncoder"
+                  },
+                  "type": "array"
+                },
+                "exports": {
+                  "default": [],
+                  "description": "The export classes measured (protocol 1.57).",
+                  "items": {
+                    "$ref": "#/$defs/CalibrationExport"
+                  },
+                  "type": "array"
+                },
+                "exports_skipped": {
+                  "default": [],
+                  "description": "The export classes with no result (protocol 1.57).",
+                  "items": {
+                    "$ref": "#/$defs/CalibrationExportSkip"
+                  },
+                  "type": "array"
+                },
+                "partial": {
+                  "description": "Some part stopped early or was skipped for time.",
+                  "type": "boolean"
+                },
+                "saved": {
+                  "description": "`calibration.toml` was written.",
+                  "type": "boolean"
+                },
+                "skipped": {
+                  "description": "The parts with no full result.",
+                  "items": {
+                    "$ref": "#/$defs/CalibrationSkip"
+                  },
+                  "type": "array"
+                },
+                "state": {
+                  "const": "done",
+                  "type": "string"
+                },
+                "write_partial": {
+                  "description": "The write stopped early.",
+                  "type": "boolean"
+                },
+                "write_speed": {
+                  "description": "The folder's synced write speed in bytes per second.",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "partial",
+                "cancelled",
+                "saved",
+                "encoders",
+                "write_speed",
+                "write_partial",
+                "skipped",
+                "exports",
+                "exports_skipped"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The last run failed; nothing was written. It stays until the next run.",
+              "properties": {
+                "code": {
+                  "$ref": "#/$defs/CalibrationCode",
+                  "description": "Why."
+                },
+                "message": {
+                  "description": "A short message with no path.",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "code",
+                "message"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A state this client does not know.",
+              "properties": {
+                "state": {
+                  "const": "other",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "CalibrationStop": {
+          "description": "Why a calibration series stopped, which says what its `sessions` means (protocol\n1.55, spec `output-estimate.md`).",
+          "oneOf": [
+            {
+              "const": "refused",
+              "description": "An open was refused: the session cap.",
+              "type": "string"
+            },
+            {
+              "const": "late",
+              "description": "The next step was late: a throughput limit.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "The plan's ceiling passed: no cap.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "The time ended it: a lower bound.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "A cancel ended it: a lower bound.",
+              "type": "string"
+            },
+            {
+              "const": "error",
+              "description": "An error after step 1 ended it: a lower bound.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/CalibrationState",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

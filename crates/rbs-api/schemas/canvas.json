@@ -1,0 +1,459 @@
+{
+  "canvas.add_vertical": {
+    "input_schema": {
+      "$defs": {
+        "VerticalLayout": {
+          "description": "The arrangement `canvas.add_vertical` writes for the new shape (protocol 1.28).",
+          "oneOf": [
+            {
+              "const": "fit",
+              "description": "Each item scaled to fit, letterboxed.",
+              "type": "string"
+            },
+            {
+              "const": "fill",
+              "description": "Each item scaled to cover the canvas.",
+              "type": "string"
+            },
+            {
+              "const": "stack",
+              "description": "The visible items in equal bands from top to bottom.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.add_vertical` (protocol 1.28, ADR-0093 decision 8): adds and runs the\nsecond, vertical canvas. At most one.",
+      "properties": {
+        "follow": {
+          "description": "Shows the main canvas's program scene and switches with it (default true).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "height": {
+          "description": "Picture height in pixels (default 1920).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "layout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerticalLayout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Arranges the program scene's sources for the new shape; absent: they keep the\nmain canvas's layout."
+        },
+        "width": {
+          "description": "Picture width in pixels (default 1080).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "title": "AddVerticalCanvas",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.auto_layout": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "VerticalLayout": {
+          "description": "The arrangement `canvas.add_vertical` writes for the new shape (protocol 1.28).",
+          "oneOf": [
+            {
+              "const": "fit",
+              "description": "Each item scaled to fit, letterboxed.",
+              "type": "string"
+            },
+            {
+              "const": "fill",
+              "description": "Each item scaled to cover the canvas.",
+              "type": "string"
+            },
+            {
+              "const": "stack",
+              "description": "The visible items in equal bands from top to bottom.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.auto_layout` (protocol 1.44, ADR-0093 decision 4): arranges a scene's\nvisible source items for the vertical canvas, one undo step.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas to arrange for; only `\"vertical\"` in 1.44."
+        },
+        "mode": {
+          "$ref": "#/$defs/VerticalLayout",
+          "description": "The arrangement."
+        },
+        "scene": {
+          "description": "The scene; the one the vertical canvas shows now when left out.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "canvas",
+        "mode"
+      ],
+      "title": "CanvasAutoLayout",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.auto_layout`'s answer.",
+      "properties": {
+        "items": {
+          "description": "The number of layouts written; 0 is not an error.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "AutoLayoutDone",
+      "type": "object"
+    }
+  },
+  "canvas.rehearse": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.rehearse` (protocol 1.100, ADR-0135 decision 11): the transition a\n`canvas.transition` would run now, played on the Preview picture only.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default); the vertical canvas has no Preview picture."
+        }
+      },
+      "title": "Rehearse",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.remove_vertical": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.set_master_muted": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.set_master_muted` (protocol 1.15, ADR-0081).",
+      "properties": {
+        "muted": {
+          "description": "Muted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "muted"
+      ],
+      "title": "SetMasterMuted",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.set_master_volume": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.",
+      "properties": {
+        "volume": {
+          "description": "A linear factor from 0 to 1.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "volume"
+      ],
+      "title": "SetMasterVolume",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.set_preview": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.set_preview` (protocol 1.9, ADR-0061): a scene enters studio mode with it in\npreview, or changes the preview scene; `null` leaves studio mode.",
+      "properties": {
+        "scene": {
+          "description": "The preview scene's id, or `null`.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "title": "SetPreview",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.set_vertical_size": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.set_vertical_size` (protocol 1.44, ADR-0093 decision 8): the vertical\ncanvas's size in pixels, even and from 64 to 8192.",
+      "properties": {
+        "height": {
+          "description": "Height in pixels.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "description": "Width in pixels.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "title": "SetVerticalSize",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.transition": {
+    "input_schema": {
+      "$defs": {
+        "TransitionKind": {
+          "description": "What a program-scene change looks like (protocol 1.81, ADR-0128).",
+          "oneOf": [
+            {
+              "const": "cut",
+              "description": "The new scene at once.",
+              "type": "string"
+            },
+            {
+              "const": "fade",
+              "description": "The new scene fades in over the old one.",
+              "type": "string"
+            },
+            {
+              "const": "move",
+              "description": "Shared sources slide to their new boxes, new ones fade in (the collection\nglide, ADR-0100), leaving ones fade out.",
+              "type": "string"
+            },
+            {
+              "const": "swipe",
+              "description": "The new scene slides in over the old one from an edge.",
+              "type": "string"
+            },
+            {
+              "const": "slide",
+              "description": "The new scene pushes the old one out.",
+              "type": "string"
+            },
+            {
+              "const": "stinger",
+              "description": "A media file plays over the change; the scenes switch at its cut point\n(protocol 1.89, ADR-0140). Its duration is the file's play range.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "A transition for one program change only (protocol 1.81, ADR-0128 decision 13):\n`kind` and `duration_ms` replace the collection's for this change; absent ones keep\nit. With kind `move`, `duration_ms` replaces the glide's duration and every\nper-source override for this change.",
+      "properties": {
+        "duration_ms": {
+          "description": "Milliseconds in `0..=5000` for this change.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransitionKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The kind for this change."
+        }
+      },
+      "title": "TransitionOnce",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "canvas.transition_progress": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`canvas.transition_progress` (protocol 1.87, ADR-0135 decision 1): a T-bar value.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputCanvas"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvas; the studio's main canvas when absent."
+        },
+        "t": {
+          "description": "The progress in `0.0..=1.0`: above 0 starts or moves a manual transition to\nthe preview scene, 1 puts it on air, 0 cancels it.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "t"
+      ],
+      "title": "TransitionProgress",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

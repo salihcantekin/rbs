@@ -1,0 +1,1009 @@
+{
+  "global.add": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`global.add` (protocol 1.10, ADR-0065).",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "AddGlobal",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`item.add`'s answer (protocol 1.6).",
+      "properties": {
+        "item": {
+          "description": "The new item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ItemAdded",
+      "type": "object"
+    }
+  },
+  "global.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "FilterInfo": {
+          "description": "One filter of a source (protocol 1.8, ADR-0062).",
+          "properties": {
+            "enabled": {
+              "description": "Applied or not.",
+              "type": "boolean"
+            },
+            "id": {
+              "description": "Its id, unique in the collection.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settings": {
+              "additionalProperties": true,
+              "description": "Its settings as it runs them on air (every field of a built-in type).",
+              "type": "object"
+            },
+            "type": {
+              "description": "Its type, `org.rbs.filter.<name>`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "enabled",
+            "settings"
+          ],
+          "type": "object"
+        },
+        "Glide": {
+          "description": "Collection or source glide timing (protocol 1.35, ADR-0100).",
+          "properties": {
+            "duration_ms": {
+              "description": "Milliseconds in `0..=5000`. `0` jumps.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "easing": {
+              "$ref": "#/$defs/GlideEasing",
+              "description": "Slide easing; fade-ins use the duration only."
+            }
+          },
+          "required": [
+            "duration_ms",
+            "easing"
+          ],
+          "type": "object"
+        },
+        "GlideEasing": {
+          "description": "How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.",
+          "oneOf": [
+            {
+              "const": "linear",
+              "description": "Straight lerp.",
+              "type": "string"
+            },
+            {
+              "const": "ease-in-out",
+              "description": "Smoothstep ease in and out.",
+              "type": "string"
+            }
+          ]
+        },
+        "Heard": {
+          "description": "The volume and mute a source is heard at (protocol 1.48, ADR-0091).",
+          "properties": {
+            "muted": {
+              "description": "Muted.",
+              "type": "boolean"
+            },
+            "volume": {
+              "description": "A linear factor from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "volume",
+            "muted"
+          ],
+          "type": "object"
+        },
+        "ItemLayout": {
+          "description": "A picture's place on the canvas (protocol 1.3): the layout the studio's canvas\nshows.",
+          "properties": {
+            "crop": {
+              "description": "Source pixels cut from the left, top, right and bottom.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "opacity": {
+              "description": "0 to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "position": {
+              "description": "Top-left corner of the unrotated box, canvas pixels.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "rotation": {
+              "description": "Clockwise rotation in degrees about the box centre.",
+              "format": "float",
+              "type": "number"
+            },
+            "scroll": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ItemScroll"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The picture moving through the box (protocol 1.94, ADR-0150); absent when it\ndoes not scroll."
+            },
+            "size": {
+              "description": "Box size in canvas pixels; negative flips.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "style": {
+              "$ref": "#/$defs/ItemStyle",
+              "description": "Shape, border and shadow (ADR-0053)."
+            }
+          },
+          "required": [
+            "position",
+            "size",
+            "rotation",
+            "crop",
+            "opacity",
+            "style"
+          ],
+          "type": "object"
+        },
+        "ItemScroll": {
+          "additionalProperties": false,
+          "description": "A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and\nspeed in the item's box units (canvas pixels for an item on the canvas); defaults\nare left out.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/ScrollDirection",
+              "description": "Which way it moves (`left`)."
+            },
+            "fade": {
+              "description": "Soft edges at both ends of the box, 0 to 2048 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "gap": {
+              "description": "Empty units between two copies, 0 to 16384 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "on_return": {
+              "$ref": "#/$defs/ScrollReturn",
+              "description": "`restart` (the default) or `continue` (protocol 1.99)."
+            },
+            "ramp_ms": {
+              "description": "How long a pause, resume or speed change eases, 0 to 5000 ms (300).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repeat": {
+              "$ref": "#/$defs/ScrollRepeat",
+              "description": "`loop` (the default) or `once`."
+            },
+            "speed": {
+              "description": "Units per second, 1 to 4000.",
+              "format": "float",
+              "type": "number"
+            },
+            "start": {
+              "$ref": "#/$defs/ScrollStart",
+              "description": "`inside` (the default) or `outside`."
+            }
+          },
+          "required": [
+            "speed"
+          ],
+          "type": "object"
+        },
+        "ItemStyle": {
+          "additionalProperties": false,
+          "description": "Shape, border and shadow of a picture (ADR-0053). Lengths are in the item's box\nunits (canvas pixels for an item on the canvas); colours are `#rrggbb` or\n`#rrggbbaa`, sRGB with straight alpha. `{}` is the plain picture.",
+          "properties": {
+            "border": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleBorder"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line inside the shape's edge."
+            },
+            "radius": {
+              "default": 0.0,
+              "description": "Corner radius; only for `rectangle`.",
+              "format": "float",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A shadow under the shape; saved, not drawn yet."
+            },
+            "shape": {
+              "$ref": "#/$defs/ShapeKind",
+              "default": "rectangle",
+              "description": "The outline."
+            }
+          },
+          "required": [
+            "shape",
+            "radius"
+          ],
+          "type": "object"
+        },
+        "MonitorMode": {
+          "description": "Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).",
+          "oneOf": [
+            {
+              "const": "off",
+              "description": "Not monitored.",
+              "type": "string"
+            },
+            {
+              "const": "only",
+              "description": "Monitored and taken off the stream and recordings while a monitor plays.",
+              "type": "string"
+            },
+            {
+              "const": "also",
+              "description": "Monitored and mixed.",
+              "type": "string"
+            }
+          ]
+        },
+        "PictureForm": {
+          "description": "The form of a marked picture in a source row (protocol 1.52). The request side is\n`request::VideoAs`; this one reads a later server's value as `other`.",
+          "oneOf": [
+            {
+              "const": "auto",
+              "description": "Images for a still source, a video file otherwise.",
+              "type": "string"
+            },
+            {
+              "const": "video",
+              "description": "A video file.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "PNG images.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A form this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "RecordTracks": {
+          "description": "The feeds of a source marked to record separately (protocol 1.52).",
+          "properties": {
+            "audio": {
+              "description": "Its sound.",
+              "type": "boolean"
+            },
+            "video": {
+              "description": "Its picture.",
+              "type": "boolean"
+            },
+            "video_as": {
+              "$ref": "#/$defs/PictureForm",
+              "description": "The picture's form; `auto` when absent."
+            }
+          },
+          "type": "object"
+        },
+        "ScrollDirection": {
+          "description": "Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the\nbox's own frame.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Right to left, like a news ticker.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Bottom to top, like credits.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollRepeat": {
+          "description": "How often a scrolling picture crosses its box (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "loop",
+              "description": "Copies follow each other forever.",
+              "type": "string"
+            },
+            {
+              "const": "once",
+              "description": "Once, then the box stays empty.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollReturn": {
+          "description": "What a scroll's run does when a shown scene draws its item again (protocol 1.99,\nADR-0152 decision 6).",
+          "oneOf": [
+            {
+              "const": "restart",
+              "description": "Starts over.",
+              "type": "string"
+            },
+            {
+              "const": "continue",
+              "description": "Where it would be had it kept moving, while the item's source stays placed.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollStart": {
+          "description": "Where a scroll run starts (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "inside",
+              "description": "Where the picture is placed without a scroll.",
+              "type": "string"
+            },
+            {
+              "const": "outside",
+              "description": "Entering from the edge the motion comes from.",
+              "type": "string"
+            }
+          ]
+        },
+        "ShapeKind": {
+          "description": "The outline of a picture inside its box (ADR-0053).",
+          "oneOf": [
+            {
+              "const": "rectangle",
+              "description": "The box, with corners rounded by `radius`.",
+              "type": "string"
+            },
+            {
+              "const": "circle",
+              "description": "The largest circle centred in the box.",
+              "type": "string"
+            },
+            {
+              "const": "ellipse",
+              "description": "The ellipse that fills the box.",
+              "type": "string"
+            },
+            {
+              "const": "triangle",
+              "description": "An isosceles triangle, tip on the top edge of the box.",
+              "type": "string"
+            },
+            {
+              "const": "arrow",
+              "description": "An arrow pointing toward the right edge of the box.",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceFault": {
+          "description": "Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does\nnot know as `other`.",
+          "oneOf": [
+            {
+              "const": "target_gone",
+              "description": "The target is gone: a window closed, a device removed.",
+              "type": "string"
+            },
+            {
+              "const": "permission_denied",
+              "description": "The system refused access, or the user has not decided yet.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "Another application holds the device.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "Any other cause.",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceInfo": {
+          "description": "One source of the program scene.",
+          "properties": {
+            "companion_of": {
+              "description": "The picture source this one is the \"Capture audio too\" companion of (protocol\n1.26, ADR-0096); absent for other sources.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "effective_offset_ms": {
+              "description": "`h`: the offset the program hears the source's sound at, in milliseconds: the\ninput's effective offset plus `filter_latency_ms` (protocol 1.77, ADR-0130\ndecision 4). It equals `sync_offset_ms` while the input's limits and the filter\ncompensation do not bite. Absent when 0.",
+              "format": "double",
+              "type": "number"
+            },
+            "filter_latency_ms": {
+              "description": "`L`: the latency of the source's running audio filters, in milliseconds\n(protocol 1.77, ADR-0130; absent when 0).",
+              "format": "double",
+              "type": "number"
+            },
+            "filters": {
+              "description": "Its filters in chain order (protocol 1.8, ADR-0062; absent when none).",
+              "items": {
+                "$ref": "#/$defs/FilterInfo"
+              },
+              "type": "array"
+            },
+            "glide": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Glide"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Per-source slide override (protocol 1.35, ADR-0100); absent when the collection\ndefaults apply."
+            },
+            "group": {
+              "description": "The group the item belongs to in this scene (protocol 1.104, ADR-0182); absent\nwhen it is in none.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "heard": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Heard"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the mix hears while the program scene, in Own levels, has an entry for the\nsource (protocol 1.48, ADR-0091); absent otherwise, when `volume` and `muted` are\nwhat is heard."
+            },
+            "id": {
+              "description": "Its id in the scene collection.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input_late_frames": {
+              "description": "Output frames of the source's audio input that were silence because its audio\nhad not arrived (protocol 1.77). Only in `source.list` answers, and only for a\nsource with a running audio input; the count only grows.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_resyncs": {
+              "description": "Times the source's audio input resynchronised (protocol 1.77); present like\n`input_late_frames`.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "item": {
+              "description": "The id of its item in the program scene (protocol 1.3; absent before).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SourceKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its kind; `null` for a type this server cannot name. `image` and `color` are\npicture sources (protocol 1.34)."
+            },
+            "layout": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ItemLayout"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where its picture is on the studio's canvas; absent for sound-only sources and\nbefore protocol 1.3."
+            },
+            "locked": {
+              "description": "The item is locked on the picture panel (protocol 1.6).",
+              "type": "boolean"
+            },
+            "mixer_hidden": {
+              "description": "The source is kept out of the Mixer but still heard (protocol 1.14, ADR-0080;\nabsent before, meaning shown).",
+              "type": "boolean"
+            },
+            "monitor": {
+              "$ref": "#/$defs/MonitorMode",
+              "description": "Whether the source is heard on the monitor output (protocol 1.30, ADR-0097;\nabsent when off)."
+            },
+            "muted": {
+              "default": false,
+              "description": "The source's sound is muted (protocol 1.6).",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "Its name, unique in the collection.",
+              "type": "string"
+            },
+            "picture_size": {
+              "description": "Width and height in pixels of the picture it delivers, as last seen while it ran\n(protocol 1.5, ADR-0058); absent for sound-only sources and before it ran.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "record_separately": {
+              "description": "The source is marked to record separately (protocol 1.46, ADR-0086); absent\nwhen it is not.",
+              "type": "boolean"
+            },
+            "record_tracks": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RecordTracks"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which feeds are marked, and the picture's form (protocol 1.52, ADR-0117);\nabsent when none is."
+            },
+            "status": {
+              "$ref": "#/$defs/SourceStatus",
+              "description": "How it is doing."
+            },
+            "sync_offset_ms": {
+              "description": "Sync offset of its sound in milliseconds (protocol 1.8; absent when 0).",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "uncompensated_ms": {
+              "description": "The part of `filter_latency_ms` the input's advance limit left uncompensated,\nin milliseconds; for a source without an audio input (media, browser audio)\nall of it (protocol 1.77; absent when 0).",
+              "format": "double",
+              "type": "number"
+            },
+            "visible": {
+              "description": "The item is shown (protocol 1.6, ADR-0059; absent before, meaning shown).",
+              "type": "boolean"
+            },
+            "volume": {
+              "default": 1.0,
+              "description": "The source's volume, a linear factor from 0 to 1 (protocol 1.6).",
+              "format": "float",
+              "type": "number"
+            },
+            "warm_up_ms": {
+              "description": "Milliseconds from the last time the source became Active to its first picture\n(protocol 1.98, ADR-0152 decision 10), for capture sources once one picture\ncame; kept while the source sleeps. Only in `source.list` answers.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "kind",
+            "status",
+            "volume",
+            "muted"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceStatus": {
+          "description": "How a source is doing.\n\nSerialised with a `state` tag. A client built for an older protocol treats a `state`\nit does not know as `failed`; this decoder does the same, taking the words from\n`reason` or `detail`.",
+          "oneOf": [
+            {
+              "description": "It runs.",
+              "properties": {
+                "state": {
+                  "const": "running",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It is not shown or played, so it is not opened.",
+              "properties": {
+                "state": {
+                  "const": "idle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It is not running.",
+              "properties": {
+                "reason": {
+                  "description": "Why, in words.",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It cannot deliver because its target is gone, refused or busy (protocol 1.20).",
+              "properties": {
+                "detail": {
+                  "description": "The adapter's own text.",
+                  "type": "string"
+                },
+                "fault": {
+                  "$ref": "#/$defs/SourceFault",
+                  "description": "The typed cause."
+                },
+                "state": {
+                  "const": "unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "fault",
+                "detail"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "StyleBorder": {
+          "additionalProperties": false,
+          "description": "A border (ADR-0053).",
+          "properties": {
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "width": {
+              "description": "Width, more than 0.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "width",
+            "color"
+          ],
+          "type": "object"
+        },
+        "StyleShadow": {
+          "additionalProperties": false,
+          "description": "A shadow (ADR-0053).",
+          "properties": {
+            "blur": {
+              "default": 0.0,
+              "description": "Blur radius, not negative.",
+              "format": "float",
+              "type": "number"
+            },
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "offset": {
+              "default": [
+                0.0,
+                0.0
+              ],
+              "description": "Offset, x right and y down.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "required": [
+            "offset",
+            "blur",
+            "color"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`global.list`'s answer (protocol 1.10): the global sources of the studio's canvas,\ntop first, as `source.list` rows.",
+      "properties": {
+        "sources": {
+          "description": "One row per global source.",
+          "items": {
+            "$ref": "#/$defs/SourceInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "title": "GlobalSourceList",
+      "type": "object"
+    }
+  },
+  "global.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`global.remove` (protocol 1.10, ADR-0065).",
+      "properties": {
+        "keep": {
+          "default": false,
+          "description": "Move it into the program scene (in studio mode the preview scene) instead of\nremoving it.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "RemoveGlobal",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ItemAdded": {
+          "description": "`item.add`'s answer (protocol 1.6).",
+          "properties": {
+            "item": {
+              "description": "The new item's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "type": "object"
+        },
+        "ItemRemoved": {
+          "description": "`item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).",
+          "properties": {
+            "deleted_sources": {
+              "description": "Every source deleted: the source at its last placement and companions left\nplaced nowhere (protocol 1.88, ADR-0142). Absent when none.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "removed_items": {
+              "description": "Every item removed in any scene, the named one first: a picture's companion\nitems in the same scene go with it (protocol 1.88, ADR-0142). Absent before.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "source_deleted": {
+              "description": "The source was deleted too: it was its last placement.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "source_deleted"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ItemAdded"
+        },
+        {
+          "$ref": "#/$defs/ItemRemoved"
+        }
+      ],
+      "title": "GlobalRemoveResult",
+      "type": "object"
+    }
+  }
+}

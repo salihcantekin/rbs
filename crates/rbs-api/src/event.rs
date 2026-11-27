@@ -14,6 +14,7 @@ use crate::types::{
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Topic {
     /// The program scene's source list (state).
     #[serde(rename = "source.changed")]
@@ -79,14 +80,14 @@ pub enum Topic {
     #[serde(rename = "addon.changed")]
     AddonChanged,
     /// One group's `group.get` state, one key per scene, group and canvas (state,
-    /// protocol 1.108, ADR-0184).
+    /// protocol 1.111, ADR-0184).
     #[serde(rename = "group.changed")]
     GroupChanged,
     /// One group's failing rendered occurrences, one key per scene, group and canvas
-    /// (state, protocol 1.108, ADR-0193 decision 5).
+    /// (state, protocol 1.111, ADR-0193 decision 5).
     #[serde(rename = "group.render_state")]
     GroupRenderState,
-    /// A group `Once` Scroll run ended, one key per run (protocol 1.108, ADR-0185).
+    /// A group `Once` Scroll run ended, one key per run (protocol 1.111, ADR-0185).
     #[serde(rename = "group.scroll_finished")]
     GroupScrollFinished,
 }
@@ -324,13 +325,13 @@ pub enum EventPayload {
     /// One add-on's status (protocol 1.90).
     #[serde(rename = "addon.changed")]
     AddonChanged(crate::types::AddOnChanged),
-    /// One group's state or removal (protocol 1.108).
+    /// One group's state or removal (protocol 1.111).
     #[serde(rename = "group.changed")]
     GroupChanged(crate::request::GroupChanged),
-    /// One group's render failures (protocol 1.108).
+    /// One group's render failures (protocol 1.111).
     #[serde(rename = "group.render_state")]
     GroupRenderState(crate::request::GroupRenderState),
-    /// A group `Once` run ended (protocol 1.108).
+    /// A group `Once` run ended (protocol 1.111).
     #[serde(rename = "group.scroll_finished")]
     GroupScrollFinished(crate::request::GroupScrollFinished),
 }

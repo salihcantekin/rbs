@@ -1,0 +1,3266 @@
+{
+  "source.add": {
+    "input_schema": {
+      "$defs": {
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        },
+        "Stamp": {
+          "description": "A shape for `source.add` kind `color` (protocol 1.100): its box and radius are\nthose of the window's Add source › Shape.",
+          "oneOf": [
+            {
+              "const": "circle",
+              "description": "A circle.",
+              "type": "string"
+            },
+            {
+              "const": "square",
+              "description": "A square.",
+              "type": "string"
+            },
+            {
+              "const": "rectangle",
+              "description": "A rectangle, 1.6 times as wide as high.",
+              "type": "string"
+            },
+            {
+              "const": "rounded_rectangle",
+              "description": "A rectangle with rounded corners.",
+              "type": "string"
+            },
+            {
+              "const": "ellipse",
+              "description": "An ellipse.",
+              "type": "string"
+            },
+            {
+              "const": "triangle",
+              "description": "A triangle.",
+              "type": "string"
+            },
+            {
+              "const": "arrow",
+              "description": "An arrow pointing right.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.add`: a source of `kind` capturing one target, on top of the program scene.\nA `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and\n`target` may be left out and are ignored, and `text` is what it shows.",
+      "properties": {
+        "adapter": {
+          "default": "",
+          "description": "The adapter that listed the target (empty for `text`).",
+          "type": "string"
+        },
+        "global": {
+          "description": "Add it as a global source of the studio's canvas instead (protocol 1.10,\nADR-0065): shown and heard in every scene; `scene` is then not allowed.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "Its kind."
+        },
+        "name": {
+          "default": null,
+          "description": "Its name; `null` lets the server pick one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file of an `image` or `media` source instead of a target (protocol 1.100):\na local absolute path; any other path needs the irreversible-actions permission.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "description": "The scene it is placed in (protocol 1.9); absent: the program scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stamp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The shape of a `color` source, centred (protocol 1.100). Not allowed for other\nkinds."
+        },
+        "target": {
+          "default": "",
+          "description": "The target's id for that adapter (empty for `text`).",
+          "type": "string"
+        },
+        "text": {
+          "description": "The text a `text` source shows (protocol 1.75); absent: \"Text\". Not allowed for\nother kinds.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The address of a `browser` page (protocol 1.100); `\"\"` adds a page that waits\nfor one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "with_audio": {
+          "description": "Also add the sound that belongs to the picture (protocol 1.26, ADR-0096): a\ndisplay's system sound without RBS's own sound, a window's application sound.\nDefault false; the picture and its sound are one undo step.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "AddSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.add`'s answer.",
+      "properties": {
+        "source": {
+          "description": "The new source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceAdded",
+      "type": "object"
+    }
+  },
+  "source.add_sample": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.add_sample` (protocol 1.34, ADR-0075): a built-in sample picture.",
+      "properties": {
+        "sample": {
+          "description": "The sample's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sample"
+      ],
+      "title": "AddSample",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.add`'s answer.",
+      "properties": {
+        "source": {
+          "description": "The new source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceAdded",
+      "type": "object"
+    }
+  },
+  "source.attributes_clipboard": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AttributesClipboard": {
+          "description": "What the attribute clipboard holds (protocol 1.68, ADR-0133 decision 6).",
+          "properties": {
+            "groups": {
+              "description": "Groups whose copied value is not the default.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "name": {
+              "description": "Its name when copied.",
+              "type": "string"
+            },
+            "source": {
+              "description": "The source copied.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "description": "Its type id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "name",
+            "type",
+            "groups"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttributesClipboard"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nullable_AttributesClipboard"
+    }
+  },
+  "source.copy_attributes": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.duplicate` and `source.copy_attributes` (protocol 1.68, ADR-0133): a source,\nits item in `scene` (default: the scene being edited) or its global item.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "default": "main",
+          "description": "The canvas whose layout is read (`source.copy_attributes` only)."
+        },
+        "scene": {
+          "default": null,
+          "description": "The scene; absent for the scene being edited. Not allowed for a global source.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceInScene",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "What the attribute clipboard holds (protocol 1.68, ADR-0133 decision 6).",
+      "properties": {
+        "groups": {
+          "description": "Groups whose copied value is not the default.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Its name when copied.",
+          "type": "string"
+        },
+        "source": {
+          "description": "The source copied.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "description": "Its type id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "name",
+        "type",
+        "groups"
+      ],
+      "title": "AttributesClipboard",
+      "type": "object"
+    }
+  },
+  "source.delete": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.duplicate": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.duplicate` and `source.copy_attributes` (protocol 1.68, ADR-0133): a source,\nits item in `scene` (default: the scene being edited) or its global item.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "default": "main",
+          "description": "The canvas whose layout is read (`source.copy_attributes` only)."
+        },
+        "scene": {
+          "default": null,
+          "description": "The scene; absent for the scene being edited. Not allowed for a global source.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceInScene",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "PlacedCopy": {
+          "description": "A source and its new item (protocol 1.68).",
+          "properties": {
+            "item": {
+              "description": "Its item.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "source": {
+              "description": "The copy's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "item"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.duplicate`'s answer (protocol 1.68, ADR-0133 decision 3).",
+      "properties": {
+        "active": {
+          "description": "False while the copy is in standby (a camera copy starts there).",
+          "type": "boolean"
+        },
+        "companions": {
+          "description": "Copies of the original's companions, each muted.",
+          "items": {
+            "$ref": "#/$defs/PlacedCopy"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "Its item.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "The copy's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "item",
+        "active",
+        "companions"
+      ],
+      "title": "SourceDuplicated",
+      "type": "object"
+    }
+  },
+  "source.fit_chrome": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.get_activity": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ActivityReturn": {
+          "description": "What a source does when it goes on air again (protocol 1.95, ADR-0152).",
+          "oneOf": [
+            {
+              "const": "continue",
+              "description": "As if it had kept running while away.",
+              "type": "string"
+            },
+            {
+              "const": "resume",
+              "description": "Where it stopped.",
+              "type": "string"
+            },
+            {
+              "const": "restart",
+              "description": "From the beginning.",
+              "type": "string"
+            }
+          ]
+        },
+        "ActivityRun": {
+          "description": "When a source runs (protocol 1.95, ADR-0152): the lowest level at which it is\nActive.",
+          "oneOf": [
+            {
+              "const": "placed",
+              "description": "While it is in any scene, hidden or off air.",
+              "type": "string"
+            },
+            {
+              "const": "shown",
+              "description": "While a shown scene (program or studio-mode preview) draws it.",
+              "type": "string"
+            },
+            {
+              "const": "on_air",
+              "description": "Only while on air.",
+              "type": "string"
+            }
+          ]
+        },
+        "EffectiveActivity": {
+          "description": "The policy in force for a source (protocol 1.95, ADR-0152).",
+          "properties": {
+            "linger_s": {
+              "description": "Seconds it lingers.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "on_return": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ActivityReturn"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it does when it comes back; absent for types without the choice."
+            },
+            "run": {
+              "$ref": "#/$defs/ActivityRun",
+              "description": "When it runs."
+            }
+          },
+          "required": [
+            "run",
+            "linger_s"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.get_activity`'s answer (protocol 1.95, ADR-0152).",
+      "properties": {
+        "effective": {
+          "$ref": "#/$defs/EffectiveActivity",
+          "description": "The policy in force: the saved choice merged with the type's defaults, or the\ndefaults alone when `supported` is false."
+        },
+        "linger_s": {
+          "description": "The saved linger.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on_return": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityReturn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The saved choice for the return."
+        },
+        "on_returns": {
+          "description": "The `on_return` values the type allows; empty when it has none.",
+          "items": {
+            "$ref": "#/$defs/ActivityReturn"
+          },
+          "type": "array"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityRun"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The saved choice; each key absent is the type's default."
+        },
+        "runs": {
+          "description": "The `run` values the source's type allows.",
+          "items": {
+            "$ref": "#/$defs/ActivityRun"
+          },
+          "type": "array"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "supported": {
+          "description": "False when the saved choice uses a value the type does not allow (the\n`activity_unsupported` warning).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "effective",
+        "supported",
+        "runs",
+        "on_returns"
+      ],
+      "title": "SourceActivityInfo",
+      "type": "object"
+    }
+  },
+  "source.get_chrome": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ChromeFill": {
+          "description": "How a display's work area is placed on the canvas (protocol 1.41, ADR-0104).",
+          "oneOf": [
+            {
+              "const": "cover",
+              "description": "Cover the canvas (layout fill).",
+              "type": "string"
+            },
+            {
+              "const": "fit",
+              "description": "Fit inside the canvas (layout fit).",
+              "type": "string"
+            }
+          ]
+        },
+        "ChromeSpec": {
+          "additionalProperties": false,
+          "description": "Display chrome insets in capture pixels (protocol 1.41, ADR-0104).",
+          "properties": {
+            "bottom": {
+              "default": 0,
+              "description": "Pixels cut from the bottom.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fill": {
+              "$ref": "#/$defs/ChromeFill",
+              "description": "`\"cover\"` (default) or `\"fit\"`. Not part of the stored region."
+            },
+            "left": {
+              "default": 0,
+              "description": "Pixels cut from the left.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "right": {
+              "default": 0,
+              "description": "Pixels cut from the right.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "top": {
+              "default": 0,
+              "description": "Pixels cut from the top.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "top",
+            "right",
+            "bottom",
+            "left"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.get_chrome`'s answer (protocol 1.41).",
+      "properties": {
+        "chrome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChromeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The chrome, or `null` when it is off."
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "chrome"
+      ],
+      "title": "SourceChromeInfo",
+      "type": "object"
+    }
+  },
+  "source.get_region": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.get_region`'s answer (protocol 1.41).",
+      "properties": {
+        "region": {
+          "description": "The region, or `null` for the whole picture.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "region"
+      ],
+      "title": "SourceRegionInfo",
+      "type": "object"
+    }
+  },
+  "source.get_settings": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.get_settings` (protocol 1.17, ADR-0077).",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "GetSourceSettings",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.get_settings`' answer: every stored setting of the source.",
+      "properties": {
+        "settings": {
+          "additionalProperties": true,
+          "description": "Its settings.",
+          "type": "object"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "settings"
+      ],
+      "title": "SourceSettingsInfo",
+      "type": "object"
+    }
+  },
+  "source.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "FilterInfo": {
+          "description": "One filter of a source (protocol 1.8, ADR-0062).",
+          "properties": {
+            "enabled": {
+              "description": "Applied or not.",
+              "type": "boolean"
+            },
+            "id": {
+              "description": "Its id, unique in the collection.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settings": {
+              "additionalProperties": true,
+              "description": "Its settings as it runs them on air (every field of a built-in type).",
+              "type": "object"
+            },
+            "type": {
+              "description": "Its type, `org.rbs.filter.<name>`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "enabled",
+            "settings"
+          ],
+          "type": "object"
+        },
+        "Glide": {
+          "description": "Collection or source glide timing (protocol 1.35, ADR-0100).",
+          "properties": {
+            "duration_ms": {
+              "description": "Milliseconds in `0..=5000`. `0` jumps.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "easing": {
+              "$ref": "#/$defs/GlideEasing",
+              "description": "Slide easing; fade-ins use the duration only."
+            }
+          },
+          "required": [
+            "duration_ms",
+            "easing"
+          ],
+          "type": "object"
+        },
+        "GlideEasing": {
+          "description": "How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.",
+          "oneOf": [
+            {
+              "const": "linear",
+              "description": "Straight lerp.",
+              "type": "string"
+            },
+            {
+              "const": "ease-in-out",
+              "description": "Smoothstep ease in and out.",
+              "type": "string"
+            }
+          ]
+        },
+        "Heard": {
+          "description": "The volume and mute a source is heard at (protocol 1.48, ADR-0091).",
+          "properties": {
+            "muted": {
+              "description": "Muted.",
+              "type": "boolean"
+            },
+            "volume": {
+              "description": "A linear factor from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "volume",
+            "muted"
+          ],
+          "type": "object"
+        },
+        "ItemLayout": {
+          "description": "A picture's place on the canvas (protocol 1.3): the layout the studio's canvas\nshows.",
+          "properties": {
+            "crop": {
+              "description": "Source pixels cut from the left, top, right and bottom.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "opacity": {
+              "description": "0 to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "position": {
+              "description": "Top-left corner of the unrotated box, canvas pixels.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "rotation": {
+              "description": "Clockwise rotation in degrees about the box centre.",
+              "format": "float",
+              "type": "number"
+            },
+            "scroll": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ItemScroll"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The picture moving through the box (protocol 1.94, ADR-0150); absent when it\ndoes not scroll."
+            },
+            "size": {
+              "description": "Box size in canvas pixels; negative flips.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "style": {
+              "$ref": "#/$defs/ItemStyle",
+              "description": "Shape, border and shadow (ADR-0053)."
+            }
+          },
+          "required": [
+            "position",
+            "size",
+            "rotation",
+            "crop",
+            "opacity",
+            "style"
+          ],
+          "type": "object"
+        },
+        "ItemScroll": {
+          "additionalProperties": false,
+          "description": "A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and\nspeed in the item's box units (canvas pixels for an item on the canvas); defaults\nare left out.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/ScrollDirection",
+              "description": "Which way it moves (`left`)."
+            },
+            "fade": {
+              "description": "Soft edges at both ends of the box, 0 to 2048 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "gap": {
+              "description": "Empty units between two copies, 0 to 16384 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "on_return": {
+              "$ref": "#/$defs/ScrollReturn",
+              "description": "`restart` (the default) or `continue` (protocol 1.99)."
+            },
+            "ramp_ms": {
+              "description": "How long a pause, resume or speed change eases, 0 to 5000 ms (300).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repeat": {
+              "$ref": "#/$defs/ScrollRepeat",
+              "description": "`loop` (the default) or `once`."
+            },
+            "speed": {
+              "description": "Units per second, 1 to 4000.",
+              "format": "float",
+              "type": "number"
+            },
+            "start": {
+              "$ref": "#/$defs/ScrollStart",
+              "description": "`inside` (the default) or `outside`."
+            }
+          },
+          "required": [
+            "speed"
+          ],
+          "type": "object"
+        },
+        "ItemStyle": {
+          "additionalProperties": false,
+          "description": "Shape, border and shadow of a picture (ADR-0053). Lengths are in the item's box\nunits (canvas pixels for an item on the canvas); colours are `#rrggbb` or\n`#rrggbbaa`, sRGB with straight alpha. `{}` is the plain picture.",
+          "properties": {
+            "border": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleBorder"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line inside the shape's edge."
+            },
+            "radius": {
+              "default": 0.0,
+              "description": "Corner radius; only for `rectangle`.",
+              "format": "float",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A shadow under the shape; saved, not drawn yet."
+            },
+            "shape": {
+              "$ref": "#/$defs/ShapeKind",
+              "default": "rectangle",
+              "description": "The outline."
+            }
+          },
+          "required": [
+            "shape",
+            "radius"
+          ],
+          "type": "object"
+        },
+        "MonitorMode": {
+          "description": "Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).",
+          "oneOf": [
+            {
+              "const": "off",
+              "description": "Not monitored.",
+              "type": "string"
+            },
+            {
+              "const": "only",
+              "description": "Monitored and taken off the stream and recordings while a monitor plays.",
+              "type": "string"
+            },
+            {
+              "const": "also",
+              "description": "Monitored and mixed.",
+              "type": "string"
+            }
+          ]
+        },
+        "PictureForm": {
+          "description": "The form of a marked picture in a source row (protocol 1.52). The request side is\n`request::VideoAs`; this one reads a later server's value as `other`.",
+          "oneOf": [
+            {
+              "const": "auto",
+              "description": "Images for a still source, a video file otherwise.",
+              "type": "string"
+            },
+            {
+              "const": "video",
+              "description": "A video file.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "PNG images.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A form this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "RecordTracks": {
+          "description": "The feeds of a source marked to record separately (protocol 1.52).",
+          "properties": {
+            "audio": {
+              "description": "Its sound.",
+              "type": "boolean"
+            },
+            "video": {
+              "description": "Its picture.",
+              "type": "boolean"
+            },
+            "video_as": {
+              "$ref": "#/$defs/PictureForm",
+              "description": "The picture's form; `auto` when absent."
+            }
+          },
+          "type": "object"
+        },
+        "ScrollDirection": {
+          "description": "Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the\nbox's own frame.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Right to left, like a news ticker.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Bottom to top, like credits.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollRepeat": {
+          "description": "How often a scrolling picture crosses its box (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "loop",
+              "description": "Copies follow each other forever.",
+              "type": "string"
+            },
+            {
+              "const": "once",
+              "description": "Once, then the box stays empty.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollReturn": {
+          "description": "What a scroll's run does when a shown scene draws its item again (protocol 1.99,\nADR-0152 decision 6).",
+          "oneOf": [
+            {
+              "const": "restart",
+              "description": "Starts over.",
+              "type": "string"
+            },
+            {
+              "const": "continue",
+              "description": "Where it would be had it kept moving, while the item's source stays placed.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollStart": {
+          "description": "Where a scroll run starts (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "inside",
+              "description": "Where the picture is placed without a scroll.",
+              "type": "string"
+            },
+            {
+              "const": "outside",
+              "description": "Entering from the edge the motion comes from.",
+              "type": "string"
+            }
+          ]
+        },
+        "ShapeKind": {
+          "description": "The outline of a picture inside its box (ADR-0053).",
+          "oneOf": [
+            {
+              "const": "rectangle",
+              "description": "The box, with corners rounded by `radius`.",
+              "type": "string"
+            },
+            {
+              "const": "circle",
+              "description": "The largest circle centred in the box.",
+              "type": "string"
+            },
+            {
+              "const": "ellipse",
+              "description": "The ellipse that fills the box.",
+              "type": "string"
+            },
+            {
+              "const": "triangle",
+              "description": "An isosceles triangle, tip on the top edge of the box.",
+              "type": "string"
+            },
+            {
+              "const": "arrow",
+              "description": "An arrow pointing toward the right edge of the box.",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceFault": {
+          "description": "Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does\nnot know as `other`.",
+          "oneOf": [
+            {
+              "const": "target_gone",
+              "description": "The target is gone: a window closed, a device removed.",
+              "type": "string"
+            },
+            {
+              "const": "permission_denied",
+              "description": "The system refused access, or the user has not decided yet.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "Another application holds the device.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "Any other cause.",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceInfo": {
+          "description": "One source of the program scene.",
+          "properties": {
+            "companion_of": {
+              "description": "The picture source this one is the \"Capture audio too\" companion of (protocol\n1.26, ADR-0096); absent for other sources.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "effective_offset_ms": {
+              "description": "`h`: the offset the program hears the source's sound at, in milliseconds: the\ninput's effective offset plus `filter_latency_ms` (protocol 1.77, ADR-0130\ndecision 4). It equals `sync_offset_ms` while the input's limits and the filter\ncompensation do not bite. Absent when 0.",
+              "format": "double",
+              "type": "number"
+            },
+            "filter_latency_ms": {
+              "description": "`L`: the latency of the source's running audio filters, in milliseconds\n(protocol 1.77, ADR-0130; absent when 0).",
+              "format": "double",
+              "type": "number"
+            },
+            "filters": {
+              "description": "Its filters in chain order (protocol 1.8, ADR-0062; absent when none).",
+              "items": {
+                "$ref": "#/$defs/FilterInfo"
+              },
+              "type": "array"
+            },
+            "glide": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Glide"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Per-source slide override (protocol 1.35, ADR-0100); absent when the collection\ndefaults apply."
+            },
+            "group": {
+              "description": "The group the item belongs to in this scene (protocol 1.104, ADR-0182); absent\nwhen it is in none.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "heard": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Heard"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the mix hears while the program scene, in Own levels, has an entry for the\nsource (protocol 1.48, ADR-0091); absent otherwise, when `volume` and `muted` are\nwhat is heard."
+            },
+            "id": {
+              "description": "Its id in the scene collection.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input_late_frames": {
+              "description": "Output frames of the source's audio input that were silence because its audio\nhad not arrived (protocol 1.77). Only in `source.list` answers, and only for a\nsource with a running audio input; the count only grows.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_resyncs": {
+              "description": "Times the source's audio input resynchronised (protocol 1.77); present like\n`input_late_frames`.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "item": {
+              "description": "The id of its item in the program scene (protocol 1.3; absent before).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SourceKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its kind; `null` for a type this server cannot name. `image` and `color` are\npicture sources (protocol 1.34)."
+            },
+            "layout": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ItemLayout"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where its picture is on the studio's canvas; absent for sound-only sources and\nbefore protocol 1.3."
+            },
+            "locked": {
+              "description": "The item is locked on the picture panel (protocol 1.6).",
+              "type": "boolean"
+            },
+            "mixer_hidden": {
+              "description": "The source is kept out of the Mixer but still heard (protocol 1.14, ADR-0080;\nabsent before, meaning shown).",
+              "type": "boolean"
+            },
+            "monitor": {
+              "$ref": "#/$defs/MonitorMode",
+              "description": "Whether the source is heard on the monitor output (protocol 1.30, ADR-0097;\nabsent when off)."
+            },
+            "muted": {
+              "default": false,
+              "description": "The source's sound is muted (protocol 1.6).",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "Its name, unique in the collection.",
+              "type": "string"
+            },
+            "picture_size": {
+              "description": "Width and height in pixels of the picture it delivers, as last seen while it ran\n(protocol 1.5, ADR-0058); absent for sound-only sources and before it ran.",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "record_separately": {
+              "description": "The source is marked to record separately (protocol 1.46, ADR-0086); absent\nwhen it is not.",
+              "type": "boolean"
+            },
+            "record_tracks": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RecordTracks"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which feeds are marked, and the picture's form (protocol 1.52, ADR-0117);\nabsent when none is."
+            },
+            "status": {
+              "$ref": "#/$defs/SourceStatus",
+              "description": "How it is doing."
+            },
+            "sync_offset_ms": {
+              "description": "Sync offset of its sound in milliseconds (protocol 1.8; absent when 0).",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "uncompensated_ms": {
+              "description": "The part of `filter_latency_ms` the input's advance limit left uncompensated,\nin milliseconds; for a source without an audio input (media, browser audio)\nall of it (protocol 1.77; absent when 0).",
+              "format": "double",
+              "type": "number"
+            },
+            "visible": {
+              "description": "The item is shown (protocol 1.6, ADR-0059; absent before, meaning shown).",
+              "type": "boolean"
+            },
+            "volume": {
+              "default": 1.0,
+              "description": "The source's volume, a linear factor from 0 to 1 (protocol 1.6).",
+              "format": "float",
+              "type": "number"
+            },
+            "warm_up_ms": {
+              "description": "Milliseconds from the last time the source became Active to its first picture\n(protocol 1.98, ADR-0152 decision 10), for capture sources once one picture\ncame; kept while the source sleeps. Only in `source.list` answers.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "kind",
+            "status",
+            "volume",
+            "muted"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        },
+        "SourceStatus": {
+          "description": "How a source is doing.\n\nSerialised with a `state` tag. A client built for an older protocol treats a `state`\nit does not know as `failed`; this decoder does the same, taking the words from\n`reason` or `detail`.",
+          "oneOf": [
+            {
+              "description": "It runs.",
+              "properties": {
+                "state": {
+                  "const": "running",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It is not shown or played, so it is not opened.",
+              "properties": {
+                "state": {
+                  "const": "idle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It is not running.",
+              "properties": {
+                "reason": {
+                  "description": "Why, in words.",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "It cannot deliver because its target is gone, refused or busy (protocol 1.20).",
+              "properties": {
+                "detail": {
+                  "description": "The adapter's own text.",
+                  "type": "string"
+                },
+                "fault": {
+                  "$ref": "#/$defs/SourceFault",
+                  "description": "The typed cause."
+                },
+                "state": {
+                  "const": "unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "fault",
+                "detail"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "StyleBorder": {
+          "additionalProperties": false,
+          "description": "A border (ADR-0053).",
+          "properties": {
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "width": {
+              "description": "Width, more than 0.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "width",
+            "color"
+          ],
+          "type": "object"
+        },
+        "StyleShadow": {
+          "additionalProperties": false,
+          "description": "A shadow (ADR-0053).",
+          "properties": {
+            "blur": {
+              "default": 0.0,
+              "description": "Blur radius, not negative.",
+              "format": "float",
+              "type": "number"
+            },
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "offset": {
+              "default": [
+                0.0,
+                0.0
+              ],
+              "description": "Offset, x right and y down.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "required": [
+            "offset",
+            "blur",
+            "color"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "description": "The state.",
+          "items": {
+            "$ref": "#/$defs/SourceInfo"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  },
+  "source.paste_attributes": {
+    "input_schema": {
+      "$defs": {
+        "FilterPasteMode": {
+          "description": "How pasted filters meet the target's own (protocol 1.68, ADR-0133 decision 6).",
+          "oneOf": [
+            {
+              "const": "replace",
+              "description": "Replace the target's filters of that kind (default).",
+              "type": "string"
+            },
+            {
+              "const": "append",
+              "description": "Add after them.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.paste_attributes` (protocol 1.68, ADR-0133 decision 6).",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "default": "main",
+          "description": "The canvas whose layouts are written."
+        },
+        "filters": {
+          "$ref": "#/$defs/FilterPasteMode",
+          "default": "replace",
+          "description": "`replace` (default) or `append`."
+        },
+        "groups": {
+          "description": "Group ids to paste; not empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "items": {
+          "description": "The target items, in any scene.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items",
+        "groups"
+      ],
+      "title": "PasteAttributes",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AttributeTarget": {
+          "description": "What `source.reset` or `source.paste_attributes` did to one target (protocol 1.68).",
+          "properties": {
+            "changed": {
+              "description": "Groups written in the undo step.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "item": {
+              "description": "The item used; absent when the source has none in the scene.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "live": {
+              "description": "Live groups written outside it (not undone by `edit.undo`).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "skipped": {
+              "description": "Groups not written.",
+              "items": {
+                "$ref": "#/$defs/SkippedGroup"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "The source.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "changed",
+            "live",
+            "skipped"
+          ],
+          "type": "object"
+        },
+        "SkippedGroup": {
+          "description": "A group not written for a target, and why (protocol 1.68).",
+          "properties": {
+            "group": {
+              "description": "The group's id.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "`not_applicable`, `unchanged`, `locked`, `no_picture_size` or `out_of_picture`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "group",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.reset`'s and `source.paste_attributes`' answer (protocol 1.68).",
+      "properties": {
+        "targets": {
+          "description": "One entry per target.",
+          "items": {
+            "$ref": "#/$defs/AttributeTarget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "targets"
+      ],
+      "title": "AttributesApplied",
+      "type": "object"
+    }
+  },
+  "source.reload": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.reload` (protocol 1.13, ADR-0077): try a source that is not running again with\nits stored settings.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "ReloadSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.rename": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.rename` (protocol 1.6).",
+      "properties": {
+        "name": {
+          "description": "The new name, unique among sources.",
+          "type": "string"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "name"
+      ],
+      "title": "RenameSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.reset": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.reset` (protocol 1.68, ADR-0133 decision 5).",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "default": "main",
+          "description": "The canvas whose layout is written."
+        },
+        "groups": {
+          "default": null,
+          "description": "Group ids; absent means every non-live group.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "description": "The scene; absent for the scene being edited.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "ResetSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AttributeTarget": {
+          "description": "What `source.reset` or `source.paste_attributes` did to one target (protocol 1.68).",
+          "properties": {
+            "changed": {
+              "description": "Groups written in the undo step.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "item": {
+              "description": "The item used; absent when the source has none in the scene.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "live": {
+              "description": "Live groups written outside it (not undone by `edit.undo`).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "skipped": {
+              "description": "Groups not written.",
+              "items": {
+                "$ref": "#/$defs/SkippedGroup"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "The source.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "changed",
+            "live",
+            "skipped"
+          ],
+          "type": "object"
+        },
+        "SkippedGroup": {
+          "description": "A group not written for a target, and why (protocol 1.68).",
+          "properties": {
+            "group": {
+              "description": "The group's id.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "`not_applicable`, `unchanged`, `locked`, `no_picture_size` or `out_of_picture`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "group",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.reset`'s and `source.paste_attributes`' answer (protocol 1.68).",
+      "properties": {
+        "targets": {
+          "description": "One entry per target.",
+          "items": {
+            "$ref": "#/$defs/AttributeTarget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "targets"
+      ],
+      "title": "AttributesApplied",
+      "type": "object"
+    }
+  },
+  "source.reset_chrome": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.retarget": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.retarget` (protocol 1.13, ADR-0077): point a source at another listed target\nof its kind (listed from 1.100). Its name, layout, filters and places stay; one step.",
+      "properties": {
+        "adapter": {
+          "description": "The adapter that listed the target (`source.targets`).",
+          "type": "string"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target": {
+          "description": "The target's id for that adapter.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "adapter",
+        "target"
+      ],
+      "title": "RetargetSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_active": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_active` (protocol 1.33): keep the device open, or release it.\nHiding a source does not release it.",
+      "properties": {
+        "active": {
+          "description": "Open while a scene that places it is on air or in preview.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "active"
+      ],
+      "title": "SetSourceActive",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_activity": {
+    "input_schema": {
+      "$defs": {
+        "ActivityReturn": {
+          "description": "What a source does when it goes on air again (protocol 1.95, ADR-0152).",
+          "oneOf": [
+            {
+              "const": "continue",
+              "description": "As if it had kept running while away.",
+              "type": "string"
+            },
+            {
+              "const": "resume",
+              "description": "Where it stopped.",
+              "type": "string"
+            },
+            {
+              "const": "restart",
+              "description": "From the beginning.",
+              "type": "string"
+            }
+          ]
+        },
+        "ActivityRun": {
+          "description": "When a source runs (protocol 1.95, ADR-0152): the lowest level at which it is\nActive.",
+          "oneOf": [
+            {
+              "const": "placed",
+              "description": "While it is in any scene, hidden or off air.",
+              "type": "string"
+            },
+            {
+              "const": "shown",
+              "description": "While a shown scene (program or studio-mode preview) draws it.",
+              "type": "string"
+            },
+            {
+              "const": "on_air",
+              "description": "Only while on air.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_activity` (protocol 1.95, ADR-0152): replaces a source's activity\npolicy. A key left out (or `null`) is the type's default, so `{source}` alone\nresets it. One undo step.",
+      "properties": {
+        "linger_s": {
+          "description": "Seconds it stays Active after it stops being needed (`0..=600`); absent is 0.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on_return": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityReturn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it does when it goes on air again; absent is the type's default."
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityRun"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it runs; absent is the type's default."
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SetSourceActivity",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_chrome": {
+    "input_schema": {
+      "$defs": {
+        "ChromeFill": {
+          "description": "How a display's work area is placed on the canvas (protocol 1.41, ADR-0104).",
+          "oneOf": [
+            {
+              "const": "cover",
+              "description": "Cover the canvas (layout fill).",
+              "type": "string"
+            },
+            {
+              "const": "fit",
+              "description": "Fit inside the canvas (layout fit).",
+              "type": "string"
+            }
+          ]
+        },
+        "ChromeSpec": {
+          "additionalProperties": false,
+          "description": "Display chrome insets in capture pixels (protocol 1.41, ADR-0104).",
+          "properties": {
+            "bottom": {
+              "default": 0,
+              "description": "Pixels cut from the bottom.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fill": {
+              "$ref": "#/$defs/ChromeFill",
+              "description": "`\"cover\"` (default) or `\"fit\"`. Not part of the stored region."
+            },
+            "left": {
+              "default": 0,
+              "description": "Pixels cut from the left.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "right": {
+              "default": 0,
+              "description": "Pixels cut from the right.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "top": {
+              "default": 0,
+              "description": "Pixels cut from the top.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_chrome` (protocol 1.41, ADR-0104). Writes the insets and the region\nthey describe. Does not move the item box. `null` clears chrome and the region.",
+      "properties": {
+        "chrome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChromeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The insets, or `null` to turn chrome off."
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SetSourceChrome",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_companion_audio": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_companion_audio` (protocol 1.26, ADR-0096): adds or removes the \"Capture\naudio too\" companion of a display or window source. One undo step each way. Adding\none that exists, or removing one that does not, changes nothing.",
+      "properties": {
+        "enabled": {
+          "description": "Whether it has a companion sound.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The picture source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "enabled"
+      ],
+      "title": "SetCompanionAudio",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_glide": {
+    "input_schema": {
+      "$defs": {
+        "Glide": {
+          "description": "Collection or source glide timing (protocol 1.35, ADR-0100).",
+          "properties": {
+            "duration_ms": {
+              "description": "Milliseconds in `0..=5000`. `0` jumps.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "easing": {
+              "$ref": "#/$defs/GlideEasing",
+              "description": "Slide easing; fade-ins use the duration only."
+            }
+          },
+          "required": [
+            "duration_ms",
+            "easing"
+          ],
+          "type": "object"
+        },
+        "GlideEasing": {
+          "description": "How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.",
+          "oneOf": [
+            {
+              "const": "linear",
+              "description": "Straight lerp.",
+              "type": "string"
+            },
+            {
+              "const": "ease-in-out",
+              "description": "Smoothstep ease in and out.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_glide` (protocol 1.35, ADR-0100): per-source slide override, or `null`\nto clear.",
+      "properties": {
+        "glide": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Glide"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Override, or `null` to use the collection defaults."
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SetSourceGlide",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_mixer_hidden": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_mixer_hidden` (protocol 1.14, ADR-0080).",
+      "properties": {
+        "hidden": {
+          "description": "Hidden from the Mixer; still heard.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "hidden"
+      ],
+      "title": "SetSourceMixerHidden",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_monitor": {
+    "input_schema": {
+      "$defs": {
+        "MonitorMode": {
+          "description": "Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).",
+          "oneOf": [
+            {
+              "const": "off",
+              "description": "Not monitored.",
+              "type": "string"
+            },
+            {
+              "const": "only",
+              "description": "Monitored and taken off the stream and recordings while a monitor plays.",
+              "type": "string"
+            },
+            {
+              "const": "also",
+              "description": "Monitored and mixed.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_monitor` (protocol 1.30, ADR-0097).",
+      "properties": {
+        "monitor": {
+          "$ref": "#/$defs/MonitorMode",
+          "description": "Off, only on the monitor, or also on the monitor."
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "monitor"
+      ],
+      "title": "SetSourceMonitor",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_muted": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_muted` (protocol 1.6).",
+      "properties": {
+        "muted": {
+          "description": "Muted.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "muted"
+      ],
+      "title": "SetSourceMuted",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_record_separately": {
+    "input_schema": {
+      "$defs": {
+        "VideoAs": {
+          "description": "The form of a separate picture file (protocol 1.52, ADR-0117 decision 1).",
+          "oneOf": [
+            {
+              "const": "auto",
+              "description": "Images for a still source, a video file otherwise.",
+              "type": "string"
+            },
+            {
+              "const": "video",
+              "description": "A video file.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "PNG images, one per change; a still source only.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_record_separately` (protocol 1.46, ADR-0086; `video`, `audio` and\n`video_as` 1.52, ADR-0117). One undo step. A patch: an absent field keeps the\nsource's value. The per-track options of ADR-0086 decision 2 are later minors, so\nthey are refused as unknown fields.",
+      "properties": {
+        "audio": {
+          "description": "Record its sound separately (1.52).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "enabled": {
+          "description": "Record its main feed as a file of its own from the next recording on: the\nsound of a sound source or of a media file (as in 1.46), the picture of a\npicture source (1.52).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "video": {
+          "description": "Record its picture separately (1.52).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "video_as": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoAs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The picture's form (1.52, ADR-0117): `image` only for a still source."
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SetRecordSeparately",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_region": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_region` (protocol 1.41, ADR-0103). One undo step, distinct from\n`item.set_crop`. `null` clears the region.",
+      "properties": {
+        "region": {
+          "description": "`[left, top, right, bottom]` in full-picture pixels, or `null`.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SetSourceRegion",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_settings": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_settings` (protocol 1.17, ADR-0077): a patch of a source's stored settings.\nA key set to `null` is removed; the result is validated for the source's type and the\nchange is one undo step. The source is opened again with the new settings (filters,\nlayout and its place in the scenes stay).",
+      "properties": {
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "description": "The keys to change.",
+          "type": "object"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "settings"
+      ],
+      "title": "SetSourceSettings",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_sync_offset": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_sync_offset` (protocol 1.8).",
+      "properties": {
+        "offset_ms": {
+          "description": "Milliseconds, `-200..=200`: positive delays the sound, negative advances it.",
+          "format": "int32",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": "integer"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "offset_ms"
+      ],
+      "title": "SetSourceSyncOffset",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_text": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's\n`text` only. One undo step.",
+      "properties": {
+        "source": {
+          "description": "The text source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "The new text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "text"
+      ],
+      "title": "SetText",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.set_volume": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`source.set_volume` (protocol 1.6).",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volume": {
+          "description": "A linear factor from 0 to 1.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source",
+        "volume"
+      ],
+      "title": "SetSourceVolume",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "source.targets": {
+    "input_schema": {
+      "$defs": {
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.targets`.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "The kind whose capture targets to list."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "TargetsParams",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "CaptureTarget": {
+          "description": "Something a source can capture: a display, window, camera or audio endpoint.",
+          "properties": {
+            "adapter": {
+              "description": "The adapter that listed it.",
+              "type": "string"
+            },
+            "app": {
+              "description": "The application that owns a window, when the OS tells it (protocol 1.101,\nADR-0168 decision 3).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "is_default": {
+              "description": "The OS default of its kind (audio endpoints).",
+              "type": "boolean"
+            },
+            "mic": {
+              "description": "A camera's own microphone, when it is not a source yet (protocol 1.101).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Name from the OS (a window title can be private: `source.targets` needs\n`control`).",
+              "type": "string"
+            },
+            "picker": {
+              "description": "Not a target yet: adding it runs the OS picker on the computer running RBS,\nso a client skips it (`target` is empty; protocol 1.101).",
+              "type": "boolean"
+            },
+            "recent": {
+              "description": "Its rank among the user's recent picks for this kind, 0 the newest\n(`settings.recent_targets`; protocol 1.101).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native size when known (displays and windows)."
+            },
+            "sound": {
+              "description": "The sound that goes with a display or window can be added too (protocol\n1.101).",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Its id for that adapter.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "adapter",
+            "target",
+            "is_default",
+            "size"
+          ],
+          "type": "object"
+        },
+        "Dimensions": {
+          "description": "Width and height in pixels.",
+          "properties": {
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.targets`' answer.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "The kind."
+        },
+        "targets": {
+          "description": "Its capture targets, in OS order.",
+          "items": {
+            "$ref": "#/$defs/CaptureTarget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "targets"
+      ],
+      "title": "TargetList",
+      "type": "object"
+    }
+  }
+}

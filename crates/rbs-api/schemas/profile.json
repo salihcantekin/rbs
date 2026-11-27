@@ -1,0 +1,82 @@
+{
+  "profile.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "LibraryEntry": {
+          "description": "One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).",
+          "properties": {
+            "id": {
+              "description": "Its stable id, passed to `profile.switch` and `collection.switch`.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name, unique in the library ignoring case.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The output profiles or scene collections (`profile.list`, `collection.list`;\nprotocol 1.4).",
+      "properties": {
+        "current": {
+          "description": "The id of the one in use.",
+          "type": "string"
+        },
+        "entries": {
+          "description": "Every entry, by name.",
+          "items": {
+            "$ref": "#/$defs/LibraryEntry"
+          },
+          "type": "array"
+        },
+        "pending": {
+          "default": false,
+          "description": "A switch asked for through the control API is still being made. Once it is\nfalse, a `current` other than the id asked for means the app refused the\nswitch or could not load the entry (its error line says why).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "current",
+        "pending"
+      ],
+      "title": "Library",
+      "type": "object"
+    }
+  },
+  "profile.switch": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`profile.switch` and `collection.switch` (protocol 1.4).",
+      "properties": {
+        "id": {
+          "description": "The entry's id (`profile.list`, `collection.list`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "EntryRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

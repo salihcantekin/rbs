@@ -2,6 +2,7 @@
 //! that narrows it to the token (mcp-server spec, "Process and connection"). It fails
 //! closed: nothing is sent after `session.hello` until `session.authenticate` answers.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use rbs_api::request::Effect;
@@ -51,6 +52,8 @@ pub enum ConnectError {
     NoToken(String),
     /// The token was refused: `auth_failed`, or `not_permitted` with `ai_tools_off`.
     Refused(String),
+    /// The server's advertised method catalog cannot safely be used.
+    InvalidCatalog(String),
     /// The server is older than narrowing: `rbs-mcp` ends (ADR-0052 decision 3).
     TooOld(String),
 }
@@ -63,8 +66,83 @@ pub struct Session {
     pub scopes: Vec<Scope>,
     /// "Allow actions that cannot be undone".
     pub irreversible: bool,
-    /// What `api.describe` listed.
+    /// What `api.describe` listed. Schemas are present only for methods whose schemas
+    /// were asked for (or that an older server sent unasked).
     pub methods: Vec<Method>,
+    /// Methods whose schemas were already requested, so an absent one is not asked again.
+    asked: BTreeSet<String>,
+}
+
+/// Most names one `api.describe` selection may hold (ADR-0196).
+const DESCRIBE_MAX_NAMES: usize = 64;
+
+impl Session {
+    /// Fetches the schemas of `names` (methods) that have none yet, in selections the
+    /// server accepts, validating each answer like the catalog.
+    pub fn load_schemas(&mut self, names: &[String]) -> Result<(), CallError> {
+        let missing: Vec<String> = names
+            .iter()
+            .filter(|n| {
+                !self.asked.contains(n.as_str())
+                    && self
+                        .methods
+                        .iter()
+                        .any(|m| &m.name == *n && m.input_schema.is_none())
+            })
+            .cloned()
+            .collect();
+        for chunk in missing.chunks(DESCRIBE_MAX_NAMES) {
+            let described = self.api.call(
+                "api.describe",
+                json!({ "detail": "schemas", "methods": chunk }),
+            )?;
+            self.asked.extend(chunk.iter().cloned());
+            self.merge(&described)?;
+        }
+        Ok(())
+    }
+
+    /// Fetches the schemas of every method of `namespaces` in one selection per 64
+    /// namespaces.
+    pub fn load_namespace_schemas(&mut self, namespaces: &[String]) -> Result<(), CallError> {
+        for chunk in namespaces.chunks(DESCRIBE_MAX_NAMES) {
+            let described = self.api.call(
+                "api.describe",
+                json!({ "detail": "schemas", "namespaces": chunk }),
+            )?;
+            self.merge(&described)?;
+            for m in &self.methods {
+                if chunk
+                    .iter()
+                    .any(|n| Some(n.as_str()) == m.name.split('.').next())
+                {
+                    self.asked.insert(m.name.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates a described answer and copies its schemas to the methods that have none.
+    fn merge(&mut self, described: &Value) -> Result<(), CallError> {
+        let got = methods(described).map_err(|e| CallError::Api {
+            kind: "invalid_catalog".into(),
+            message: match e {
+                ConnectError::InvalidCatalog(w) => w,
+                _ => "RBS sent an invalid method catalog".into(),
+            },
+            data: Value::Null,
+        })?;
+        for new in got {
+            if let Some(old) = self.methods.iter_mut().find(|m| m.name == new.name) {
+                if old.input_schema.is_none() {
+                    old.input_schema = new.input_schema;
+                    old.output_schema = new.output_schema;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One method `api.describe` listed.
@@ -76,32 +154,159 @@ pub struct Method {
     pub scope: Option<Scope>,
     /// What it does; `None` when missing or unknown (handled as `destructive`).
     pub effect: Option<Effect>,
+    /// Schema of request parameters supplied by the server, when available.
+    pub input_schema: Option<Value>,
+    /// Schema of a successful result supplied by the server, when available.
+    pub output_schema: Option<Value>,
 }
 
-/// The methods of an `api.describe` answer, each read on its own so one this build
-/// does not understand does not hide the others.
-fn methods(described: &Value) -> Vec<Method> {
+fn supported_schema(schema: &Value) -> bool {
+    fn references_are_local(value: &Value, root: &Value, depth: usize) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        match value {
+            Value::Object(object) => object.iter().all(|(key, value)| {
+                (match key.as_str() {
+                    "$id" | "$dynamicRef" | "$recursiveRef" => false,
+                    "$ref" => value
+                        .as_str()
+                        .and_then(|reference| reference.strip_prefix('#'))
+                        .is_some_and(|pointer| {
+                            (pointer.is_empty() || pointer.starts_with('/'))
+                                && root.pointer(pointer).is_some_and(|target| {
+                                    (target.is_object() || target.is_boolean())
+                                        && jsonschema::meta::is_valid(target)
+                                })
+                        }),
+                    _ => true,
+                }) && references_are_local(value, root, depth + 1)
+            }),
+            Value::Array(values) => values
+                .iter()
+                .all(|value| references_are_local(value, root, depth + 1)),
+            _ => true,
+        }
+    }
+    fn acyclic(
+        value: &Value,
+        root: &Value,
+        active: &mut BTreeSet<usize>,
+        done: &mut BTreeSet<usize>,
+        depth: usize,
+    ) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        let id = std::ptr::from_ref(value) as usize;
+        if done.contains(&id) {
+            return true;
+        }
+        if !active.insert(id) {
+            return false;
+        }
+        let valid = match value {
+            Value::Object(object) => {
+                let reference_ok = object.get("$ref").is_none_or(|reference| {
+                    reference
+                        .as_str()
+                        .and_then(|reference| reference.strip_prefix('#'))
+                        .and_then(|pointer| root.pointer(pointer))
+                        .is_some_and(|target| acyclic(target, root, active, done, depth + 1))
+                });
+                reference_ok
+                    && object
+                        .values()
+                        .all(|child| acyclic(child, root, active, done, depth + 1))
+            }
+            Value::Array(values) => values
+                .iter()
+                .all(|child| acyclic(child, root, active, done, depth + 1)),
+            _ => true,
+        };
+        active.remove(&id);
+        if valid {
+            done.insert(id);
+        }
+        valid
+    }
+    serde_json::to_vec(schema).is_ok_and(|bytes| bytes.len() <= 65_536)
+        && references_are_local(schema, schema, 0)
+        && acyclic(
+            schema,
+            schema,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            0,
+        )
+        && jsonschema::meta::is_valid(schema)
+}
+
+/// Validate tool names before accepting the catalog. Unknown scope and effect values
+/// remain unknown and are handled conservatively when generating tools.
+fn methods(described: &Value) -> Result<Vec<Method>, ConnectError> {
     let Some(list) = described.get("methods").and_then(Value::as_array) else {
-        return Vec::new();
+        return Err(ConnectError::InvalidCatalog(
+            "RBS sent an invalid method catalog".into(),
+        ));
     };
-    list.iter()
-        .filter_map(|m| {
-            let name = m.get("name")?.as_str()?.to_owned();
-            let scope = m
-                .get("scope")
-                .cloned()
-                .and_then(|s| serde_json::from_value(s).ok());
-            let effect = m
-                .get("effect")
-                .cloned()
-                .and_then(|e| serde_json::from_value(e).ok());
-            Some(Method {
-                name,
-                scope,
-                effect,
-            })
-        })
-        .collect()
+    let mut names = BTreeSet::from(["studio_summary".to_owned()]);
+    let mut methods = Vec::with_capacity(list.len());
+    for m in list {
+        let Some(name) = m.get("name").and_then(Value::as_str) else {
+            return Err(ConnectError::InvalidCatalog(
+                "RBS sent an invalid method catalog".into(),
+            ));
+        };
+        let tool = crate::tool_name(name);
+        if !name.contains('.')
+            || name.split('.').any(str::is_empty)
+            || tool.len() > 64
+            || !tool
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(ConnectError::InvalidCatalog(
+                "RBS sent a method with an invalid tool name".into(),
+            ));
+        }
+        if !names.insert(tool) {
+            return Err(ConnectError::InvalidCatalog(
+                "RBS sent conflicting method tool names".into(),
+            ));
+        }
+        let scope = m
+            .get("scope")
+            .cloned()
+            .and_then(|s| serde_json::from_value(s).ok());
+        let effect = m
+            .get("effect")
+            .cloned()
+            .and_then(|e| serde_json::from_value(e).ok());
+        let input_schema = m.get("input_schema").filter(|v| !v.is_null()).cloned();
+        let output_schema = m.get("output_schema").filter(|v| !v.is_null()).cloned();
+        match (&input_schema, &output_schema) {
+            (None, None) => {}
+            (Some(input), Some(output))
+                if input.get("type") == Some(&json!("object"))
+                    && output.is_object()
+                    && supported_schema(input)
+                    && supported_schema(output) => {}
+            _ => {
+                return Err(ConnectError::InvalidCatalog(
+                    "RBS sent invalid method schema metadata".into(),
+                ));
+            }
+        }
+        methods.push(Method {
+            name: name.to_owned(),
+            scope,
+            effect,
+            input_schema,
+            output_schema,
+        });
+    }
+    Ok(methods)
 }
 
 /// Makes sessions (the real one over IPC, a fake in tests).
@@ -162,12 +367,13 @@ pub fn handshake(mut api: Box<dyn Api>, token: &Token) -> Result<Session, Connec
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let described = api.call("api.describe", json!({})).map_err(lost)?;
-    let methods = methods(&described);
+    let methods = methods(&described)?;
     Ok(Session {
         api,
         scopes,
         irreversible,
         methods,
+        asked: BTreeSet::new(),
     })
 }
 

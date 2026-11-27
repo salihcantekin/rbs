@@ -1,0 +1,112 @@
+{
+  "look.apply": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`look.apply` (protocol 1.34, ADR-0075): copy a built-in look onto a source.",
+      "properties": {
+        "look": {
+          "description": "The look's id (`look.list`).",
+          "type": "string"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "look"
+      ],
+      "title": "ApplyLook",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "look.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "LookGroup": {
+          "description": "How the Library groups a built-in look (protocol 1.34, ADR-0075).",
+          "oneOf": [
+            {
+              "const": "color",
+              "description": "Colour grading.",
+              "type": "string"
+            },
+            {
+              "const": "effect",
+              "description": "Blur, sharpen, keying.",
+              "type": "string"
+            },
+            {
+              "const": "shape",
+              "description": "The shape and border of the picture.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A group this decoder does not know. A client treats it like any other group\nit cannot name.",
+              "type": "string"
+            }
+          ]
+        },
+        "LookInfo": {
+          "additionalProperties": false,
+          "description": "One built-in look, as `look.list` returns it.",
+          "properties": {
+            "group": {
+              "$ref": "#/$defs/LookGroup",
+              "description": "Its group."
+            },
+            "id": {
+              "description": "Stable id, `builtin:<slug>`.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Name for lists.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "group"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`look.list`'s answer (protocol 1.34): the built-in looks, in Library order.\nThere are no user-saved looks.",
+      "properties": {
+        "looks": {
+          "description": "One row per built-in look.",
+          "items": {
+            "$ref": "#/$defs/LookInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "looks"
+      ],
+      "title": "LookList",
+      "type": "object"
+    }
+  }
+}

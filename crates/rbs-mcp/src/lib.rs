@@ -10,6 +10,7 @@
 //! except through the control API.
 
 pub mod catalog;
+pub mod lazy;
 pub mod link;
 pub mod token;
 
@@ -28,6 +29,9 @@ pub const RETRY_EVERY: Duration = Duration::from_secs(2);
 /// What `studio_summary` answers while not connected.
 pub const HINT: &str = "RBS is not connected. Open RBS and press Start in Settings, AI tools.";
 
+const INVALID_CATALOG_HINT: &str =
+    "RBS sent an invalid method catalog. Check the rbs-mcp diagnostic output.";
+
 /// MCP protocol versions this server speaks, newest first.
 const MCP_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -40,9 +44,15 @@ const NEVER_METHODS: &[&str] = &["edit.undo", "edit.redo"];
 /// Methods that reach the network or add a source that may (`openWorldHint`).
 const OPEN_WORLD: &[&str] = &[
     "stream.start",
+    "stream.destination.start",
     "source.add",
     "source.set_settings",
     "source.retarget",
+    "addon.install",
+    "addon.update",
+    "record.start_to_file",
+    "collection.set_stinger_file",
+    "settings.set",
 ];
 
 /// The reads `studio_summary` combines, under these keys.
@@ -56,6 +66,51 @@ const SUMMARY: &[(&str, &str)] = &[
     ("stream", "stream.status"),
 ];
 
+/// Which tools `rbs-mcp` lists (ADR-0196).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolSet {
+    /// The small fixed set of [`lazy`]: index, schema and call tools (the default).
+    #[default]
+    Lazy,
+    /// The fixed set plus one tool per method of these namespaces (`--tools a,b`).
+    Namespaces(Vec<String>),
+    /// One tool per allowed method, no fixed set (`--tools all`).
+    All,
+}
+
+impl ToolSet {
+    /// Parses the value of `--tools`.
+    pub fn parse(list: &str) -> Self {
+        let names: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if names.iter().any(|n| n == "all") {
+            Self::All
+        } else if names.is_empty() {
+            Self::Lazy
+        } else {
+            Self::Namespaces(names)
+        }
+    }
+
+    fn namespaces(&self) -> Option<&[String]> {
+        match self {
+            Self::Namespaces(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    fn lazy(&self) -> bool {
+        !matches!(self, Self::All)
+    }
+
+    fn direct(&self) -> bool {
+        !matches!(self, Self::Lazy)
+    }
+}
+
 /// What handling one message produced.
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
@@ -67,7 +122,10 @@ pub struct Outcome {
 
 enum State {
     /// Not connected; the reason, for stderr only.
-    Hint(String),
+    Hint {
+        reason: String,
+        catalog_error: bool,
+    },
     Ready(Ready),
 }
 
@@ -81,21 +139,24 @@ struct Ready {
 pub struct Mcp<C: Connect> {
     connector: C,
     clock: Arc<dyn Clock>,
-    namespaces: Option<Vec<String>>,
+    tools: ToolSet,
     state: State,
     last_try: Option<Timestamp>,
     initialized: bool,
 }
 
 impl<C: Connect> Mcp<C> {
-    /// A server that connects with `connector`; `namespaces` limits the generated
-    /// tools (`--tools`).
-    pub fn new(connector: C, clock: Arc<dyn Clock>, namespaces: Option<Vec<String>>) -> Self {
+    /// A server that connects with `connector`; `tools` says which tools are listed
+    /// (`--tools`).
+    pub fn new(connector: C, clock: Arc<dyn Clock>, tools: ToolSet) -> Self {
         Self {
             connector,
             clock,
-            namespaces,
-            state: State::Hint("not tried yet".into()),
+            tools,
+            state: State::Hint {
+                reason: "not tried yet".into(),
+                catalog_error: false,
+            },
             last_try: None,
             initialized: false,
         }
@@ -118,7 +179,7 @@ impl<C: Connect> Mcp<C> {
     /// Why it is not connected, for stderr (never the token).
     pub fn hint_reason(&self) -> Option<&str> {
         match &self.state {
-            State::Hint(why) => Some(why),
+            State::Hint { reason, .. } => Some(reason),
             State::Ready(_) => None,
         }
     }
@@ -126,21 +187,47 @@ impl<C: Connect> Mcp<C> {
     fn try_connect(&mut self) -> Result<(), ConnectError> {
         self.last_try = Some(self.clock.now());
         match self.connector.connect() {
-            Ok(session) => {
-                let tools = generated(&session, self.namespaces.as_deref());
+            Ok(mut session) => {
+                let tools = if self.tools.direct() {
+                    let mut spaces: Vec<String> = generated(&session, self.tools.namespaces())
+                        .iter()
+                        .filter_map(|(_, m)| m.name.split('.').next().map(str::to_owned))
+                        .collect();
+                    spaces.sort();
+                    spaces.dedup();
+                    if let Err(e) = session.load_namespace_schemas(&spaces) {
+                        let e = match e {
+                            CallError::Lost(why) => ConnectError::Unreachable(why),
+                            CallError::Api { message, .. } => ConnectError::InvalidCatalog(message),
+                        };
+                        return self.fail(e);
+                    }
+                    // Clone after loading: the tools carry the schemas.
+                    generated(&session, self.tools.namespaces())
+                } else {
+                    Vec::new()
+                };
                 self.state = State::Ready(Ready { session, tools });
                 Ok(())
             }
-            Err(e) => {
-                self.state = State::Hint(match &e {
-                    ConnectError::Unreachable(w)
-                    | ConnectError::NoToken(w)
-                    | ConnectError::Refused(w)
-                    | ConnectError::TooOld(w) => w.clone(),
-                });
-                Err(e)
-            }
+            Err(e) => self.fail(e),
         }
+    }
+
+    fn fail(&mut self, e: ConnectError) -> Result<(), ConnectError> {
+        let catalog_error = matches!(e, ConnectError::InvalidCatalog(_));
+        let reason = match &e {
+            ConnectError::Unreachable(w)
+            | ConnectError::NoToken(w)
+            | ConnectError::Refused(w)
+            | ConnectError::InvalidCatalog(w)
+            | ConnectError::TooOld(w) => w.clone(),
+        };
+        self.state = State::Hint {
+            reason,
+            catalog_error,
+        };
+        Err(e)
     }
 
     /// Tries again when not connected and the last try is [`RETRY_EVERY`] ago.
@@ -190,7 +277,7 @@ impl<C: Connect> Mcp<C> {
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": true } },
                     "serverInfo": { "name": "rbs", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": "RBS is a live production engine (scenes, sources, recording, streaming). Call studio_summary first. Edits are undoable in RBS; live actions (recording, streaming) are not."
+                    "instructions": "RBS is a live production engine (scenes, sources, recording, streaming). Call studio_summary first, then api_index to find methods and api_schema to learn a method's parameters before calling it. Edits are undoable in RBS; live actions (recording, streaming) are not."
                 })
             }
             "notifications/initialized" => {
@@ -231,14 +318,21 @@ impl<C: Connect> Mcp<C> {
             "annotations": { "readOnlyHint": true }
         })];
         if let State::Ready(ready) = &self.state {
+            if self.tools.lazy() {
+                list.extend(lazy::tool_list(&ready.session, &callable(&ready.session)));
+            }
             for (tool, method) in &ready.tools {
                 let entry = catalog::entry(&method.name);
-                list.push(json!({
+                let mut tool = json!({
                     "name": tool,
                     "description": entry.description,
-                    "inputSchema": entry.input_schema,
+                    "inputSchema": method.input_schema.as_ref().unwrap_or(&entry.input_schema),
                     "annotations": annotations(method),
-                }));
+                });
+                if let Some(schema) = method.output_schema.as_ref().and_then(mcp_output_schema) {
+                    tool["outputSchema"] = schema;
+                }
+                list.push(tool);
             }
         }
         list
@@ -251,15 +345,32 @@ impl<C: Connect> Mcp<C> {
             .cloned()
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
+        let lazy_on = self.tools.lazy();
         let State::Ready(ready) = &mut self.state else {
-            return if name == "studio_summary" {
-                text_result(HINT, false)
+            let hint = if matches!(
+                self.state,
+                State::Hint {
+                    catalog_error: true,
+                    ..
+                }
+            ) {
+                INVALID_CATALOG_HINT
             } else {
-                text_result(HINT, true)
+                HINT
+            };
+            return if name == "studio_summary" {
+                text_result(hint, hint == INVALID_CATALOG_HINT)
+            } else {
+                text_result(hint, true)
             };
         };
         let answer = if name == "studio_summary" {
             summary(ready)
+        } else if lazy_on && lazy::is_lazy_tool(name) {
+            match lazy_call(ready, name, &arguments) {
+                Ok(answer) => answer,
+                Err(text) => return text_result(&text, true),
+            }
         } else {
             let Some((_, method)) = ready.tools.iter().find(|(t, _)| t == name) else {
                 return text_result(&format!("There is no tool {name:?}."), true);
@@ -288,7 +399,10 @@ impl<C: Connect> Mcp<C> {
                 })
             }
             Err(CallError::Lost(why)) => {
-                self.state = State::Hint(why);
+                self.state = State::Hint {
+                    reason: why,
+                    catalog_error: false,
+                };
                 // Try again on the next call, not at once.
                 self.last_try = Some(self.clock.now());
                 if self.initialized {
@@ -303,23 +417,70 @@ impl<C: Connect> Mcp<C> {
     }
 }
 
-/// The generated tools of a session: methods built into this `rbs-api` that the
-/// session's scopes and permission allow, minus those never offered.
+/// One of the fixed tools of [`lazy`]. `Err` is a message for a tool error; `Ok` the
+/// API's answer.
+fn lazy_call(
+    ready: &mut Ready,
+    name: &str,
+    arguments: &Value,
+) -> Result<Result<Value, CallError>, String> {
+    match name {
+        lazy::INDEX => lazy::index(&callable(&ready.session), arguments).map(Ok),
+        lazy::SCHEMA => {
+            let names = lazy::schema_names(&callable(&ready.session), arguments)?;
+            match ready.session.load_schemas(&names) {
+                Ok(()) => {}
+                Err(CallError::Api { message, .. }) => return Err(message),
+                Err(lost) => return Ok(Err(lost)),
+            }
+            Ok(Ok(lazy::schemas(&callable(&ready.session), &names)))
+        }
+        _ => {
+            let method = lazy::call_target(name, &callable(&ready.session), arguments)?
+                .name
+                .clone();
+            let params = arguments
+                .get("params")
+                .cloned()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({}));
+            Ok(ready.session.api.call(&method, params))
+        }
+    }
+}
+
+/// The generated tools of a session: methods advertised by the connected RBS
+/// server that the session's scopes and permission allow, minus those never offered.
 fn generated(session: &Session, namespaces: Option<&[String]>) -> Vec<(String, Method)> {
+    callable(session)
+        .into_iter()
+        .filter(|m| {
+            let ns = m.name.split('.').next().unwrap_or("");
+            namespaces.is_none_or(|list| list.iter().any(|n| n == ns))
+        })
+        .map(|m| (tool_name(&m.name), m.clone()))
+        .collect()
+}
+
+/// The methods this session may call through any tool: not a never-offered one, and
+/// allowed by the token's scopes and permission.
+fn callable(session: &Session) -> Vec<&Method> {
     session
         .methods
         .iter()
-        .filter(|m| rbs_api::request::METHODS.iter().any(|b| b.name == m.name))
         .filter(|m| {
             let ns = m.name.split('.').next().unwrap_or("");
-            !NEVER_NAMESPACES.contains(&ns)
-                && !NEVER_METHODS.contains(&m.name.as_str())
-                && namespaces.is_none_or(|list| list.iter().any(|n| n == ns))
+            !NEVER_NAMESPACES.contains(&ns) && !NEVER_METHODS.contains(&m.name.as_str())
         })
-        .filter(|m| m.scope.is_some_and(|s| session.scopes.contains(&s)))
-        .filter(|m| session.irreversible || !needs_permission(m.effect))
-        .map(|m| (tool_name(&m.name), m.clone()))
+        .filter(|m| allowed(session, m))
         .collect()
+}
+
+fn allowed(session: &Session, method: &Method) -> bool {
+    method.scope.is_some_and(|scope| {
+        !matches!(scope, rbs_api::Scope::Plugins | rbs_api::Scope::Tokens)
+            && session.scopes.contains(&scope)
+    }) && (session.irreversible || !needs_permission(method.effect))
 }
 
 /// `source.add` → `source_add`.
@@ -333,7 +494,14 @@ fn annotations(method: &Method) -> Value {
         Some(Effect::Edit) => json!({ "readOnlyHint": false, "destructiveHint": false }),
         _ => json!({ "readOnlyHint": false, "destructiveHint": true }),
     };
-    if OPEN_WORLD.contains(&method.name.as_str()) {
+    if method.name == "settings.set" {
+        a["destructiveHint"] = json!(true);
+    }
+    if OPEN_WORLD.contains(&method.name.as_str())
+        || !rbs_api::request::METHODS
+            .iter()
+            .any(|known| known.name == method.name)
+    {
         a["openWorldHint"] = json!(true);
     }
     a
@@ -342,10 +510,12 @@ fn annotations(method: &Method) -> Value {
 fn summary(ready: &mut Ready) -> Result<Value, CallError> {
     let mut out = Map::new();
     for (key, method) in SUMMARY {
-        let allowed = ready.session.methods.iter().any(|m| {
-            m.name == *method && m.scope.is_some_and(|s| ready.session.scopes.contains(&s))
-        });
-        if !allowed {
+        if !ready
+            .session
+            .methods
+            .iter()
+            .any(|m| m.name == *method && allowed(&ready.session, m))
+        {
             continue;
         }
         match ready.session.api.call(method, json!({})) {
@@ -373,6 +543,61 @@ fn structured(value: Value) -> Value {
         "structuredContent": object,
         "isError": false
     })
+}
+
+fn mcp_output_schema(schema: &Value) -> Option<Value> {
+    fn references_stay_in_defs(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().all(|(key, value)| {
+                (key != "$ref"
+                    || value
+                        .as_str()
+                        .is_some_and(|reference| reference.starts_with("#/$defs/")))
+                    && references_stay_in_defs(value)
+            }),
+            Value::Array(values) => values.iter().all(references_stay_in_defs),
+            _ => true,
+        }
+    }
+
+    let root = schema.as_object()?;
+    if root.get("type") == Some(&json!("object")) {
+        return Some(schema.clone());
+    }
+    if root.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "$schema" | "$defs" | "title" | "description" | "anyOf"
+        )
+    }) || !references_stay_in_defs(schema)
+    {
+        return None;
+    }
+    let branches = root.get("anyOf")?.as_array()?;
+    let [object, null] = branches.as_slice() else {
+        return None;
+    };
+    let reference = object.as_object()?;
+    if reference.len() != 1 {
+        return None;
+    }
+    let pointer = reference.get("$ref")?.as_str()?.strip_prefix('#')?;
+    let target = schema.pointer(pointer)?;
+    if target.get("type") != Some(&json!("object"))
+        || target.get("$ref").is_some()
+        || null != &json!({"type": "null"})
+    {
+        return None;
+    }
+    let mut result = schema.clone();
+    result["type"] = json!("object");
+    result["anyOf"][1] = json!({
+        "type": "object",
+        "properties": {"result": {"type": "null"}},
+        "required": ["result"],
+        "additionalProperties": false
+    });
+    Some(result)
 }
 
 fn text_result(text: &str, is_error: bool) -> Value {

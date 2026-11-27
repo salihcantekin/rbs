@@ -234,7 +234,7 @@ studio maps a slot to its group through the `GroupSpan::tag` of the last list
 sent (the run's first id, kept when `renew_group_run_ids` renews its public id)
 and reports `Allocation` or `Render` until it recovers. `Once` ends are taken
 with `Studio::take_group_scroll_finished` (event `group.scroll_finished`); the
-host routes `group.get` and `group.apply` (protocol 1.109). Still open: the
+host routes `group.get` and `group.apply` (protocol 1.111). Still open: the
 hot-path measurements and human approval (performance budgets).
 During a Move transition a leaving group member is not drawn.
 Group Scroll uses group spans in the compositor's layer list, not a new

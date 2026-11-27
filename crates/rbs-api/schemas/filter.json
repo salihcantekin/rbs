@@ -1,0 +1,404 @@
+{
+  "filter.add": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.",
+      "properties": {
+        "settings": {
+          "additionalProperties": true,
+          "description": "Settings by key; missing keys take their defaults. Numbers are JSON numbers,\ncolours `\"#rrggbb\"` or `\"#rrggbbaa\"`.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "description": "The filter type, `org.rbs.filter.<name>` (see `filter.types`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "type"
+      ],
+      "title": "AddFilter",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`filter.add`'s answer (protocol 1.8).",
+      "properties": {
+        "filter": {
+          "description": "The new filter's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filter"
+      ],
+      "title": "FilterAdded",
+      "type": "object"
+    }
+  },
+  "filter.add_voice_chain": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.delete`.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "filter.move": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`filter.move` (protocol 1.8).",
+      "properties": {
+        "filter": {
+          "description": "The filter's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "index": {
+          "description": "Its new position in the chain, from 0.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filter",
+        "index"
+      ],
+      "title": "MoveFilter",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "filter.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`filter.remove` (protocol 1.8).",
+      "properties": {
+        "filter": {
+          "description": "The filter's id (unique in the collection).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filter"
+      ],
+      "title": "FilterRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "filter.set_enabled": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`filter.set_enabled` (protocol 1.8).",
+      "properties": {
+        "enabled": {
+          "description": "Applied or not.",
+          "type": "boolean"
+        },
+        "filter": {
+          "description": "The filter's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filter",
+        "enabled"
+      ],
+      "title": "SetFilterEnabled",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "filter.set_settings": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`filter.set_settings` (protocol 1.8): a patch on the settings on air.",
+      "properties": {
+        "filter": {
+          "description": "The filter's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "description": "The keys to replace; the others stay.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "filter",
+        "settings"
+      ],
+      "title": "SetFilterSettings",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "filter.types": {
+    "input_schema": {
+      "$defs": {
+        "FilterDomains": {
+          "description": "Which filter types `filter.types` lists (protocol 1.16, ADR-0082).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "Video filters only: what a 1.8 to 1.15 server lists, so old clients never meet\nthe audio kinds.",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "Audio filters only.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Both.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`filter.types` (protocol 1.8; `domain` since 1.16).",
+      "properties": {
+        "domain": {
+          "$ref": "#/$defs/FilterDomains",
+          "default": "video",
+          "description": "Which types to list; video when absent."
+        }
+      },
+      "title": "FilterTypesParams",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "FilterField": {
+          "description": "One setting of a filter type.",
+          "properties": {
+            "curve": {
+              "description": "`\"linear\"` or `\"log\"` for a number (protocol 1.16); absent for other kinds. A\nlog number is meant for a log-scaled slider.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "default": {
+              "description": "The default: a number, a `\"#rrggbb\"` / `\"#rrggbbaa\"` string, a boolean for a\ntoggle, or an option key for a choice."
+            },
+            "help": {
+              "description": "One sentence that explains the setting (protocol 1.16); absent when none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "description": "Settings key.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "`\"number\"`, `\"color\"`, `\"toggle\"`, `\"choice\"` (the last two since protocol 1.16) or `\"source\"` (protocol 1.19).",
+              "type": "string"
+            },
+            "label": {
+              "description": "English label.",
+              "type": "string"
+            },
+            "max": {
+              "description": "Largest number.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "min": {
+              "description": "Smallest number.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "options": {
+              "description": "The options of a `\"choice\"` (protocol 1.16); absent for other kinds.",
+              "items": {
+                "$ref": "#/$defs/FilterOption"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "step": {
+              "description": "The UI's increment.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "description": "Shown after the value; absent when none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "label",
+            "kind",
+            "default"
+          ],
+          "type": "object"
+        },
+        "FilterOption": {
+          "description": "One option of a `\"choice\"` setting (protocol 1.16).",
+          "properties": {
+            "key": {
+              "description": "The value stored in settings.",
+              "type": "string"
+            },
+            "label": {
+              "description": "English label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "label"
+          ],
+          "type": "object"
+        },
+        "FilterTypeInfo": {
+          "description": "A filter type and its settings schema.",
+          "properties": {
+            "domain": {
+              "default": "video",
+              "description": "`\"video\"` or `\"audio\"` (protocol 1.16, ADR-0082); a 1.8 to 1.15 server omits it,\nwhich means video.",
+              "type": "string"
+            },
+            "fields": {
+              "description": "Its settings, in display order.",
+              "items": {
+                "$ref": "#/$defs/FilterField"
+              },
+              "type": "array"
+            },
+            "latency_ms": {
+              "description": "The delay, in milliseconds, an instance adds at the running audio graph's format\nand block size (protocol 1.77, ADR-0130 decision 2); the studio compensates it\non sources with an audio input. Present for audio types, absent for video types.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "English display name.",
+              "type": "string"
+            },
+            "type": {
+              "description": "`org.rbs.filter.<name>` for a video filter, `org.rbs.audio-filter.<name>` for an\naudio filter.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "domain",
+            "name",
+            "fields"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`filter.types`' answer (protocol 1.8).",
+      "properties": {
+        "types": {
+          "description": "The built-in filter types, in the order the app lists them.",
+          "items": {
+            "$ref": "#/$defs/FilterTypeInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "types"
+      ],
+      "title": "FilterTypeList",
+      "type": "object"
+    }
+  }
+}

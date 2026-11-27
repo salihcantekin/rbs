@@ -10,6 +10,7 @@ pub use group_properties::*;
 /// companion items. Existing group members are refused (ADR-0186). One undo step;
 /// answers [`GroupCreated`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateGroup {
     /// The scene (`scene.list`).
@@ -25,6 +26,7 @@ pub struct CreateGroup {
 /// `group.remove` (protocol 1.104): ungroups. The members stay where they are, without
 /// the group. One undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GroupRef {
     /// The scene.
@@ -35,6 +37,7 @@ pub struct GroupRef {
 
 /// `group.rename` (protocol 1.104). One undo step; `ok` when the name is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RenameGroup {
     /// The scene.
@@ -47,6 +50,7 @@ pub struct RenameGroup {
 
 /// `group.create`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupCreated {
     /// The new group's id.
     pub group: u32,
@@ -56,6 +60,7 @@ pub struct GroupCreated {
 
 /// One group in `group.list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupInfo {
     /// The group's id.
     pub id: u32,
@@ -67,6 +72,7 @@ pub struct GroupInfo {
 
 /// `group.list`'s answer (protocol 1.104).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupList {
     /// The scene.
     pub scene: u32,

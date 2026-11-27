@@ -10,6 +10,7 @@ use crate::types::SourceKind;
 /// A `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and
 /// `target` may be left out and are ignored, and `text` is what it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AddSource {
     /// Its kind.
     pub kind: SourceKind,

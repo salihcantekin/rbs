@@ -524,7 +524,7 @@ struct Host {
     slides_follow: u8,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
-    /// What the group topics last published (protocol 1.108).
+    /// What the group topics last published (protocol 1.111).
     group_events: group_properties::GroupEvents,
     /// The source pickers' state: thumbnail and region grabs, and the permission prompts.
     pickers: pickers::Pickers,

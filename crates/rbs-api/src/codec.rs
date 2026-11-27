@@ -112,7 +112,9 @@ impl Codec for JsonCodec {
                 "method must be a string",
             ));
         };
-        if method_scope(&method).is_none() {
+        if method_scope(&method).is_none()
+            && !matches!(method.as_str(), "ui.command.list" | "ui.command.run")
+        {
             let m = malformed(
                 Some(id),
                 ErrorKind::MethodNotFound,

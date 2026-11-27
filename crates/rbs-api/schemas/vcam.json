@@ -1,0 +1,231 @@
+{
+  "vcam.start": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "vcam.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "VcamFrames": {
+          "description": "What the virtual camera's session did with the frames since sending started\n(the virtual camera spec, \"Ring and stats\").",
+          "properties": {
+            "consumer_absent": {
+              "description": "Frames sent while no app read the camera.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "consumer_busy": {
+              "description": "Frames skipped or dropped for lack of room on the consumer side.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "format_pending": {
+              "description": "Frames dropped while the camera's format was being changed.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "os_errors": {
+              "description": "Operating system errors.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "refused": {
+              "description": "Frames the session refused.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replaced": {
+              "description": "Frames a newer frame replaced before the sender took them.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sent": {
+              "description": "Frames handed to the consumer side.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "sent",
+            "replaced",
+            "refused",
+            "consumer_busy",
+            "consumer_absent",
+            "format_pending",
+            "os_errors"
+          ],
+          "type": "object"
+        },
+        "VcamInstall": {
+          "description": "Whether the virtual camera is on this computer (protocol 1.12, ADR-0066).",
+          "oneOf": [
+            {
+              "const": "added",
+              "description": "Apps can list the camera.",
+              "type": "string"
+            },
+            {
+              "const": "not_added",
+              "description": "The camera is not added.",
+              "type": "string"
+            },
+            {
+              "const": "needs_update",
+              "description": "The installed part is from another version of RBS; adding again updates it.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "This computer cannot have the camera.",
+              "type": "string"
+            }
+          ]
+        },
+        "VcamStatus": {
+          "description": "`vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).",
+          "properties": {
+            "failure": {
+              "description": "While sending, why the camera's node failed, until it runs again.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "frames": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/VcamFrames"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "While sending, the session's counters when the adapter shares them; always\n`null` in `vcam.changed`."
+            },
+            "height": {
+              "description": "Height in pixels: sent now, or saved for the next start.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate": {
+              "description": "Frames per second, rounded: sent now, or saved for the next start.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "description": "Why, in words for the user, with `needs_update` and `unavailable`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sending": {
+              "description": "RBS sends the program to the camera now.",
+              "type": "boolean"
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/VcamInstall"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the camera is added; `null` while the app has not read it yet."
+            },
+            "width": {
+              "description": "Width in pixels: sent now, or saved for the next start.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "state",
+            "sending",
+            "width",
+            "height",
+            "rate",
+            "failure",
+            "frames"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/VcamStatus",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  },
+  "vcam.stop": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

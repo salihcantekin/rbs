@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// The stable error kinds of protocol version 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorKind {

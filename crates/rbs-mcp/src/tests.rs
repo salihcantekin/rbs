@@ -20,12 +20,16 @@ struct FakeApi {
     auth_error: Option<(&'static str, Value)>,
     lose_after: Option<usize>,
     protocol: &'static str,
+    extra_methods: Vec<Value>,
+    omitted_methods: Vec<&'static str>,
+    /// An older server: ignores the selection and sends no schemas on request.
+    legacy: bool,
 }
 
 impl Api for FakeApi {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, CallError> {
         let mut calls = self.calls.lock().unwrap();
-        calls.push((method.to_owned(), params));
+        calls.push((method.to_owned(), params.clone()));
         if self.lose_after.is_some_and(|n| calls.len() > n) {
             return Err(CallError::Lost("gone".into()));
         }
@@ -39,13 +43,33 @@ impl Api for FakeApi {
                 }),
                 None => Ok(json!({ "scopes": self.scopes, "irreversible": self.irreversible })),
             },
-            "api.describe" => Ok(json!({
-                "protocol": "1.84",
-                "methods": rbs_api::request::METHODS.iter().map(|m| json!({
-                    "name": m.name, "scope": m.scope, "effect": m.effect
-                })).chain([json!({"name": "future.thing", "scope": "read", "effect": "read"})])
-                .collect::<Vec<_>>(),
-            })),
+            "api.describe" => {
+                let wanted: Vec<&str> = params["methods"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let with_schemas = params["detail"] == "schemas" && !self.legacy;
+                let known = rbs_api::schema::builtin_schemas().unwrap();
+                let mut methods: Vec<Value> = rbs_api::request::METHODS
+                    .iter()
+                    .filter(|m| !self.omitted_methods.contains(&m.name))
+                    .filter(|m| wanted.is_empty() || wanted.contains(&m.name))
+                    .map(|m| {
+                        let mut v = json!({
+                            "name": m.name, "scope": m.scope, "effect": m.effect
+                        });
+                        if let (true, Some(p)) = (with_schemas, known.get(m.name)) {
+                            v["input_schema"] = p.input_schema.clone();
+                            v["output_schema"] = p.output_schema.clone();
+                        }
+                        v
+                    })
+                    .collect();
+                if wanted.is_empty() {
+                    methods.extend(self.extra_methods.iter().cloned());
+                }
+                Ok(json!({ "protocol": "1.110", "methods": methods }))
+            }
             "scene.remove" => Err(CallError::Api {
                 kind: "not_permitted".into(),
                 message: "on air".into(),
@@ -81,6 +105,9 @@ fn api(calls: &Calls, scopes: &[Scope], irreversible: bool) -> FakeApi {
         auth_error: None,
         lose_after: None,
         protocol: "1.84",
+        extra_methods: vec![json!({"name": "future.thing", "scope": "read", "effect": "read"})],
+        omitted_methods: Vec::new(),
+        legacy: false,
     }
 }
 
@@ -93,6 +120,10 @@ struct Rig {
 }
 
 fn rig(plan: Vec<Option<FakeApi>>) -> Rig {
+    rig_with(plan, ToolSet::All)
+}
+
+fn rig_with(plan: Vec<Option<FakeApi>>, tools: ToolSet) -> Rig {
     let clock = Arc::new(TestClock::new());
     let attempts = Arc::new(Mutex::new(0));
     let token = Token::from_bytes(&[7; 32]);
@@ -101,7 +132,7 @@ fn rig(plan: Vec<Option<FakeApi>>) -> Rig {
         attempts: attempts.clone(),
         token: token.clone(),
     };
-    let mut mcp = Mcp::new(connector, clock.clone(), None);
+    let mut mcp = Mcp::new(connector, clock.clone(), tools);
     mcp.start().unwrap();
     let mut r = Rig {
         mcp,
@@ -164,6 +195,179 @@ fn unreachable_lists_only_studio_summary_with_the_start_hint() {
     assert!(HINT.contains("press Start in Settings, AI tools"));
     let (result, _) = r.call("scene_list", json!({}));
     assert_eq!(result["isError"], true);
+}
+
+#[test]
+fn tools_use_server_schemas_and_legacy_servers_keep_the_fallback() {
+    let calls = Calls::default();
+    let mut server = api(&calls, &[Scope::Read, Scope::Control], false);
+    server.legacy = true;
+    server.omitted_methods.push("scene.add");
+    let pair = rbs_api::schema::builtin_schemas()
+        .unwrap()
+        .remove("scene.add")
+        .unwrap();
+    server.extra_methods.push(json!({
+        "name": "scene.add", "scope": "control", "effect": "edit",
+        "input_schema": pair.input_schema, "output_schema": pair.output_schema
+    }));
+    let mut r = rig(vec![Some(server)]);
+    let list = r.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    let tools = list[0]["result"]["tools"].as_array().unwrap();
+    let add = tools.iter().find(|t| t["name"] == "scene_add").unwrap();
+    assert_eq!(add["inputSchema"], pair.input_schema);
+    assert_eq!(add["outputSchema"], pair.output_schema);
+    let legacy = tools.iter().find(|t| t["name"] == "scene_rename").unwrap();
+    assert!(legacy.get("outputSchema").is_none());
+    assert!(legacy["inputSchema"].is_object());
+}
+
+#[test]
+fn rejects_partial_or_invalid_server_schema_metadata() {
+    let calls = Calls::default();
+    for (input, output) in [
+        (json!({"type": "object"}), Value::Null),
+        (Value::Null, json!({"type": "object"})),
+        (json!({"type": "string"}), json!({"type": "object"})),
+        (json!({"type": "object"}), json!("not a schema")),
+        (
+            json!({"type": "object", "properties": {"x": {"type": 42}}}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "properties": {"x": {"$ref": "https://example.test/schema"}}}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "properties": {"x": {"$ref": "#/$defs/missing"}}}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "default": {"type": 42}, "properties": {"x": {"$ref": "#/default"}}}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "$id": "https://example.test/"}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "$ref": "#"}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "$defs": {"node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/node"}}}}, "properties": {"root": {"$ref": "#/$defs/node"}}}),
+            json!({"type": "object"}),
+        ),
+        (
+            json!({"type": "object", "$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}}}),
+            json!({"type": "object"}),
+        ),
+    ] {
+        let mut server = api(&calls, &[Scope::Read, Scope::Control], false);
+        server.extra_methods.push(json!({
+            "name": "future.schema", "scope": "read", "effect": "read",
+            "input_schema": input, "output_schema": output
+        }));
+        assert!(matches!(
+            handshake(Box::new(server), &Token::from_bytes(&[7; 32])),
+            Err(ConnectError::InvalidCatalog(_))
+        ));
+    }
+}
+
+#[test]
+fn accepts_a_bounded_schema_with_a_local_reference() {
+    let calls = Calls::default();
+    let mut server = api(&calls, &[Scope::Read], false);
+    server.extra_methods.push(json!({
+        "name": "future.reference", "scope": "read", "effect": "read",
+        "input_schema": {
+            "type": "object",
+            "$defs": {"value": {"type": "string"}},
+            "properties": {"name": {"$ref": "#/$defs/value"}}
+        },
+        "output_schema": {"type": "object"}
+    }));
+    assert!(handshake(Box::new(server), &Token::from_bytes(&[7; 32])).is_ok());
+}
+
+#[test]
+fn rejects_schemas_that_exceed_the_depth_or_size_bound() {
+    let calls = Calls::default();
+    let mut nested = json!({"type": "string"});
+    for _ in 0..65 {
+        nested = json!({"items": nested});
+    }
+    for input in [
+        json!({"type": "object", "properties": {"x": nested}}),
+        json!({"type": "object", "description": "x".repeat(65_536)}),
+    ] {
+        let mut server = api(&calls, &[Scope::Read], false);
+        server.extra_methods.push(json!({
+            "name": "future.bounded", "scope": "read", "effect": "read",
+            "input_schema": input, "output_schema": {"type": "object"}
+        }));
+        assert!(matches!(
+            handshake(Box::new(server), &Token::from_bytes(&[7; 32])),
+            Err(ConnectError::InvalidCatalog(_))
+        ));
+    }
+}
+
+#[test]
+fn non_object_output_schema_is_not_exposed_as_an_mcp_output_schema() {
+    let calls = Calls::default();
+    let mut server = api(&calls, &[Scope::Read], false);
+    server.extra_methods.push(json!({
+        "name": "future.scalar", "scope": "read", "effect": "read",
+        "input_schema": {"type": "object"}, "output_schema": {"type": "string"}
+    }));
+    let mut r = rig(vec![Some(server)]);
+    let list = r.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    let tools = list[0]["result"]["tools"].as_array().unwrap();
+    let scalar = tools.iter().find(|t| t["name"] == "future_scalar").unwrap();
+    assert!(scalar.get("outputSchema").is_none());
+}
+
+#[test]
+fn nullable_object_output_schema_matches_structured_content() {
+    let catalog = rbs_api::schema::builtin_schemas().unwrap();
+    let schema = &catalog["source.attributes_clipboard"].output_schema;
+    let output = mcp_output_schema(schema).unwrap();
+    let clipboard = json!({"source": 1, "name": "Camera", "type": "camera", "groups": []});
+    for (value, valid) in [
+        (clipboard.clone(), true),
+        (json!({"result": null}), true),
+        (json!({"result": clipboard}), false),
+        (json!({"result": null, "unexpected": true}), false),
+        (json!({"source": -1}), false),
+        (Value::Null, false),
+    ] {
+        assert_eq!(jsonschema::is_valid(&output, &value), valid, "{value}");
+    }
+    let unsupported = json!({
+        "$defs": {"value": {"type": "object"}},
+        "anyOf": [{"$ref": "#/$defs/value"}, {"type": "null"}],
+        "not": {"required": ["result"]}
+    });
+    assert!(mcp_output_schema(&unsupported).is_none());
+    let ref_to_replaced_branch = json!({
+        "$defs": {"value": {
+            "type": "object",
+            "properties": {"field": {"$ref": "#/anyOf/1"}}
+        }},
+        "anyOf": [{"$ref": "#/$defs/value"}, {"type": "null"}]
+    });
+    assert!(mcp_output_schema(&ref_to_replaced_branch).is_none());
+    let ignored_ref_sibling = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$defs": {
+            "value": {"$ref": "#/$defs/scalar", "type": "object"},
+            "scalar": {"type": "string"}
+        },
+        "anyOf": [{"$ref": "#/$defs/value"}, {"type": "null"}]
+    });
+    assert!(mcp_output_schema(&ignored_ref_sibling).is_none());
 }
 
 #[test]
@@ -243,9 +447,148 @@ fn tools_follow_the_scopes_and_the_permission() {
         assert!(!t.starts_with("tokens_"), "{t}");
         assert!(!t.starts_with("session_"), "{t}");
         assert!(!t.starts_with("events_"), "{t}");
+        assert!(
+            ![
+                "addon_install",
+                "addon_update",
+                "addon_cancel",
+                "addon_clean",
+                "addon_remove"
+            ]
+            .contains(&t.as_str()),
+            "{t}"
+        );
         assert!(t != "edit_undo" && t != "edit_redo", "{t}");
-        assert!(t != "future_thing", "only methods built into rbs-api");
     }
+}
+
+#[test]
+fn malformed_or_colliding_server_catalogs_fail_closed() {
+    let calls = Calls::default();
+    for extra in [
+        json!({"name": "scene_list", "scope": "read", "effect": "read"}),
+        json!({"name": "scene.list", "scope": "read", "effect": "read"}),
+        json!({"name": "studio.summary", "scope": "read", "effect": "read"}),
+        json!({"name": "bad.!", "scope": "read", "effect": "read"}),
+        json!({"name": format!("long.{}", "a".repeat(60)), "scope": "read", "effect": "read"}),
+        json!({"scope": "read", "effect": "read"}),
+        json!({"name": "future..bad", "scope": "read", "effect": "read"}),
+    ] {
+        let mut server = api(&calls, &[Scope::Read], true);
+        server.extra_methods = vec![extra];
+        let mut r = rig(vec![Some(server)]);
+        assert_eq!(r.tools(), ["studio_summary"]);
+        assert!(r.mcp.hint_reason().unwrap().contains("RBS sent"));
+        let (answer, _) = r.call("studio_summary", json!({}));
+        assert_eq!(answer["isError"], true);
+        assert_eq!(answer["content"][0]["text"], INVALID_CATALOG_HINT);
+    }
+    // Both names are individually valid but map to the same MCP name.
+    let mut server = api(&calls, &[Scope::Read], true);
+    server.extra_methods = vec![
+        json!({"name": "new.method_name", "scope": "read", "effect": "read"}),
+        json!({"name": "new.method.name", "scope": "read", "effect": "read"}),
+    ];
+    let mut r = rig(vec![Some(server)]);
+    assert_eq!(r.tools(), ["studio_summary"]);
+    assert!(r.mcp.hint_reason().unwrap().contains("conflicting"));
+}
+
+#[test]
+fn new_method_metadata_fails_closed_for_unknown_scope_and_effect() {
+    let calls = Calls::default();
+    let mut server = api(
+        &calls,
+        &[Scope::Read, Scope::Control, Scope::Plugins],
+        false,
+    );
+    server.extra_methods = vec![
+        json!({"name": "future.read", "scope": "read", "effect": "read"}),
+        json!({"name": "future.unknown_scope", "scope": "new_scope", "effect": "read"}),
+        json!({"name": "future.unknown_effect", "scope": "control", "effect": "future"}),
+        json!({"name": "future.missing_effect", "scope": "control"}),
+        json!({"name": "future.plugin", "scope": "plugins", "effect": "read"}),
+    ];
+    let mut r = rig(vec![Some(server)]);
+    let tools = r.tools();
+    assert!(tools.contains(&"future_read".to_owned()));
+    assert!(!tools.contains(&"future_unknown_scope".to_owned()));
+    assert!(!tools.contains(&"future_unknown_effect".to_owned()));
+    assert!(!tools.contains(&"future_missing_effect".to_owned()));
+    assert!(!tools.contains(&"future_plugin".to_owned()));
+    let list = r.send(r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#);
+    let method = list[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "future_read")
+        .unwrap();
+    assert_eq!(method["inputSchema"], json!({"type": "object"}));
+    assert_eq!(method["annotations"]["openWorldHint"], true);
+    assert_eq!(method["description"], "The control API method future.read.");
+
+    let mut server = api(&calls, &[Scope::Read, Scope::Control], true);
+    server.extra_methods = vec![
+        json!({"name": "future.unknown_effect", "scope": "control", "effect": "future"}),
+        json!({"name": "future.missing_effect", "scope": "control"}),
+        json!({"name": "future.missing_scope", "effect": "read"}),
+    ];
+    let mut r = rig(vec![Some(server)]);
+    let tools = r.tools();
+    assert!(tools.contains(&"future_unknown_effect".to_owned()));
+    assert!(tools.contains(&"future_missing_effect".to_owned()));
+    assert!(!tools.contains(&"future_missing_scope".to_owned()));
+    let list = r.send(r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#);
+    for name in ["future_unknown_effect", "future_missing_effect"] {
+        let method = list[0]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert_eq!(method["annotations"]["destructiveHint"], true);
+    }
+}
+
+#[test]
+fn summary_applies_the_same_scope_and_effect_checks_as_generated_tools() {
+    for (scope, effect) in [("plugins", "read"), ("read", "future")] {
+        let calls = Calls::default();
+        let mut server = api(&calls, &[Scope::Read, Scope::Plugins], false);
+        server.omitted_methods.push("scene.list");
+        server
+            .extra_methods
+            .push(json!({"name": "scene.list", "scope": scope, "effect": effect}));
+        let mut r = rig(vec![Some(server)]);
+        assert!(!r.tools().contains(&"scene_list".to_owned()));
+        let (answer, _) = r.call("studio_summary", json!({}));
+        assert_eq!(answer["isError"], false);
+        assert!(answer["structuredContent"].get("scenes").is_none());
+        assert!(
+            !calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, _)| method == "scene.list")
+        );
+    }
+}
+
+#[test]
+fn tools_use_the_connected_servers_catalog_without_a_local_method_whitelist() {
+    let calls = Calls::default();
+    let mut r = rig(vec![Some(api(&calls, &[Scope::Read], true))]);
+
+    assert!(r.tools().contains(&"future_thing".to_owned()));
+    let (result, _) = r.call("future_thing", json!({}));
+    assert_eq!(result["isError"], false);
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(method, _)| method == "future.thing")
+    );
 }
 
 #[test]
@@ -271,6 +614,8 @@ fn annotations_follow_the_effect_and_an_unknown_one_is_destructive() {
         name: "x.y".into(),
         scope: Some(Scope::Read),
         effect,
+        input_schema: None,
+        output_schema: None,
     };
     assert_eq!(
         annotations(&method(Some(Effect::Read)))["readOnlyHint"],
@@ -289,8 +634,39 @@ fn annotations_follow_the_effect_and_an_unknown_one_is_destructive() {
         name: "stream.start".into(),
         scope: Some(Scope::Control),
         effect: Some(Effect::Live),
+        input_schema: None,
+        output_schema: None,
     };
     assert_eq!(annotations(&stream)["openWorldHint"], true);
+}
+
+#[test]
+fn parameter_dependent_actions_have_conservative_annotations() {
+    let method = |name: &str| Method {
+        name: name.into(),
+        scope: Some(Scope::Admin),
+        effect: Some(Effect::Edit),
+        input_schema: None,
+        output_schema: None,
+    };
+    assert_eq!(
+        annotations(&method("settings.set"))["destructiveHint"],
+        true
+    );
+    for name in [
+        "source.add",
+        "source.retarget",
+        "source.set_settings",
+        "stream.start",
+        "stream.destination.start",
+        "addon.install",
+        "addon.update",
+        "record.start_to_file",
+        "collection.set_stinger_file",
+        "settings.set",
+    ] {
+        assert_eq!(annotations(&method(name))["openWorldHint"], true, "{name}");
+    }
 }
 
 #[test]
@@ -324,7 +700,7 @@ fn a_call_is_forwarded_and_an_api_error_is_a_tool_error() {
 fn a_lost_connection_goes_back_to_the_hint_and_reconnects() {
     let calls = Calls::default();
     let mut first = api(&calls, &[Scope::Read, Scope::Control], false);
-    first.lose_after = Some(3);
+    first.lose_after = Some(4);
     let second = api(&calls, &[Scope::Read], false);
     let mut r = rig(vec![Some(first), Some(second)]);
     assert!(r.mcp.connected());
@@ -373,7 +749,7 @@ fn an_older_server_ends_rbs_mcp() {
             attempts: Arc::default(),
             token: Token::from_bytes(&[1; 32]),
         };
-        let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), None);
+        let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), ToolSet::All);
         assert!(mcp.start().is_err());
     }
     // Nothing after hello when the protocol is too old.
@@ -419,15 +795,17 @@ fn namespaces_limit_the_generated_tools() {
         attempts: Arc::default(),
         token: Token::from_bytes(&[1; 32]),
     };
-    let mut mcp = Mcp::new(connector, clock, Some(vec!["scene".into()]));
+    let mut mcp = Mcp::new(connector, clock, ToolSet::Namespaces(vec!["scene".into()]));
     mcp.start().unwrap();
     let o = mcp.handle(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let v: Value = serde_json::from_str(&o.out[0]).unwrap();
     for t in v["result"]["tools"].as_array().unwrap() {
         let name = t["name"].as_str().unwrap();
         assert!(
-            name == "studio_summary" || name.starts_with("scene_"),
+            name == "studio_summary" || name.starts_with("scene_") || name.starts_with("api_"),
             "{name}"
         );
     }
 }
+
+mod lazy;

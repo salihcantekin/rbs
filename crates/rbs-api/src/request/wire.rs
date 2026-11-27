@@ -5,16 +5,42 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+impl Request {
+    /// Its method name.
+    pub fn method(&self) -> &'static str {
+        match self {
+            Request::Hello(_) => "session.hello",
+            Request::Authenticate(_) => "session.authenticate",
+            Request::Describe(_) => "api.describe",
+            Request::Unsubscribe(_) => "events.unsubscribe",
+            Request::Command(c) => c.method(),
+            Request::Ui(ui) => ui.method(),
+        }
+    }
+
+    /// The scope it needs, or `None` for the handshake.
+    pub fn scope(&self) -> Option<Scope> {
+        match self {
+            Self::Ui(_) => Some(Scope::Control),
+            _ => method_scope(self.method()).flatten(),
+        }
+    }
+}
+
 /// The flat wire form of [`Request`]: `{"method": ..., "params": ...}`.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
-pub(super) enum WireRequest {
+pub(crate) enum WireRequest {
+    #[serde(rename = "ui.command.list")]
+    UiList(crate::ui::UiList),
+    #[serde(rename = "ui.command.run")]
+    UiRun(crate::ui::UiRun),
     #[serde(rename = "session.hello")]
     Hello(Hello),
     #[serde(rename = "session.authenticate")]
     Authenticate(Authenticate),
     #[serde(rename = "api.describe")]
-    Describe(Empty),
+    Describe(DescribeParams),
     #[serde(rename = "studio.get")]
     StudioGet(Empty),
     #[serde(rename = "source.list")]
@@ -435,9 +461,11 @@ macro_rules! wire_conversions {
 
 wire_conversions! {
     from_wire {
+        WireRequest::UiList(p) => Request::Ui(crate::ui::UiRequest::List { client: p.client }),
+        WireRequest::UiRun(p) => Request::Ui(crate::ui::UiRequest::Run { id: p.id, client: p.client }),
         WireRequest::Hello(p) => Request::Hello(p),
         WireRequest::Authenticate(p) => Request::Authenticate(p),
-        WireRequest::Describe(_) => Request::Describe,
+        WireRequest::Describe(p) => Request::Describe(p),
         WireRequest::EventsUnsubscribe(p) => Request::Unsubscribe(p),
         WireRequest::StudioGet(_) => Request::Command(C::StudioGet),
         WireRequest::SourceList(_) => Request::Command(C::SourceList),
@@ -475,9 +503,11 @@ wire_conversions! {
         WireRequest::AddonList(_) => Request::Command(C::AddonList),
     }
     to_wire {
+        Request::Ui(crate::ui::UiRequest::List { client }) => WireRequest::UiList(crate::ui::UiList { client }),
+        Request::Ui(crate::ui::UiRequest::Run { id, client }) => WireRequest::UiRun(crate::ui::UiRun { id, client }),
         Request::Hello(p) => WireRequest::Hello(p),
         Request::Authenticate(p) => WireRequest::Authenticate(p),
-        Request::Describe => WireRequest::Describe(Empty {}),
+        Request::Describe(p) => WireRequest::Describe(p),
         Request::Unsubscribe(p) => WireRequest::EventsUnsubscribe(p),
     }
     command_to_wire {

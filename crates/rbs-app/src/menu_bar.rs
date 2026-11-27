@@ -21,6 +21,10 @@ use crate::studio_ui::filters::filter_types;
 use crate::studio_ui::multi_select::ArrangeOp;
 use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
 use crate::title_bar::WindowCommand;
+pub(crate) mod api;
+mod entries;
+use entries::entry_op;
+pub use entries::{EntryKind, EntryOp};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
 /// per command or choice submenu in `titles`, `enabled` and `checked`, one list per
@@ -275,10 +279,6 @@ pub enum AddWhat {
 /// API's `source.add` has no such kind).
 const EXISTING: &str = "existing";
 
-fn panel_of(id: &CommandId) -> Option<PanelId> {
-    PanelId::parse(id.param("id")?).ok()
-}
-
 fn rail_at(id: &CommandId) -> Option<RailAt> {
     match id.param("at")? {
         "between" => Some(RailAt::Between),
@@ -421,7 +421,9 @@ impl Shown<'_> {
 
 mod arrange;
 mod group_menu;
+mod registry;
 pub use group_menu::GroupOp;
+use registry::panel_of;
 
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
@@ -1689,58 +1691,6 @@ pub enum MixerBulk {
     ShowAll,
 }
 
-/// The two libraries the status bar's pickers switch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntryKind {
-    Profile,
-    Collection,
-}
-
-/// What an Output profile or Scene collection command does to the one in use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntryOp {
-    New,
-    Duplicate,
-    Rename,
-    Delete,
-    Import,
-    Export,
-}
-
-impl EntryOp {
-    /// The word the registry ids end in.
-    pub fn name(self) -> &'static str {
-        match self {
-            EntryOp::New => "new",
-            EntryOp::Duplicate => "duplicate",
-            EntryOp::Rename => "rename",
-            EntryOp::Delete => "delete",
-            EntryOp::Import => "import",
-            EntryOp::Export => "export",
-        }
-    }
-}
-
-/// The library and operation of a `ui.profile.*` or `ui.collection.*` id.
-fn entry_op(base: &str) -> Option<(EntryKind, EntryOp)> {
-    let (kind, op) = if let Some(op) = base.strip_prefix("ui.profile.") {
-        (EntryKind::Profile, op)
-    } else {
-        (EntryKind::Collection, base.strip_prefix("ui.collection.")?)
-    };
-    let op = [
-        EntryOp::New,
-        EntryOp::Duplicate,
-        EntryOp::Rename,
-        EntryOp::Delete,
-        EntryOp::Import,
-        EntryOp::Export,
-    ]
-    .into_iter()
-    .find(|o| o.name() == op)?;
-    Some((kind, op))
-}
-
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
@@ -1992,7 +1942,7 @@ fn float_or_dock(state: &Shown<'_>, id: &CommandId, on: bool) -> Option<Run> {
 pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
     use rbs_ui::LayoutCommand as L;
     let id = CommandId::parse(text).ok()?;
-    let entry = id.resolve().ok()??;
+    let entry = registry::resolve_catalogued_entry(&id)?;
     state.enabled(&id).ok()?;
     if let Kind::Picker { param, .. } = entry.kind {
         // `source.add?kind=K` opens the device picker of that kind; a bare one does

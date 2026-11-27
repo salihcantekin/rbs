@@ -25,14 +25,20 @@ use crate::transport::{
     SendError, TransportEvent,
 };
 use crate::types::SourceLevels;
+mod admission;
+mod ui_routing;
+use ui_routing::PendingUi;
 
 /// The protocol version this server speaks.
 ///
-/// 1.109 defers nested scenes (ADR-0188): a scene placement is refused with
-/// `invalid_params`, and OBS import skips and reports one.
-/// 1.108 adds group Properties (ADR-0184, ADR-0185, ADR-0186, ADR-0193): `group.get`,
+/// 1.111 adds group Properties (ADR-0184, ADR-0185, ADR-0186, ADR-0193): `group.get`,
 /// `group.apply` and the topics `group.changed`, `group.render_state` and
-/// `group.scroll_finished`; `group.create` refuses grouped items.
+/// `group.scroll_finished`; `group.create` refuses grouped items. It also defers
+/// nested scenes (ADR-0188): a scene placement is refused with `invalid_params`, and
+/// OBS import skips and reports one.
+/// 1.110 adds the control API catalog (ADR-0196).
+/// 1.109 routes `ui.command.list` and `ui.command.run` to registered UI clients.
+/// 1.108 adds optional input and output schemas to `api.describe`.
 /// 1.102 adds the slide show source (ADR-0171 decision 9): the kind `slideshow`,
 /// `media.next` and `media.previous`, and `index` and `count` on a media state
 /// (1.101 is ADR-0168's).
@@ -139,7 +145,7 @@ use crate::types::SourceLevels;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.109";
+pub const PROTOCOL_VERSION: &str = "1.111";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -319,6 +325,8 @@ pub enum AuditEvent {
 /// What the API thread does for the server.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    /// Resolve this client-scoped request on one UI client.
+    Ui(crate::ui::UiForwarded),
     /// Send this command to the control thread (and wake it).
     Forward(Forwarded),
     /// Store this subscriber mask where the control thread reads it. Comes before the
@@ -341,6 +349,8 @@ pub trait Sampler: Send {
 /// Server input.
 #[derive(Debug)]
 pub enum Input {
+    /// A targeted UI client's asynchronous resolution.
+    Ui(crate::ui::UiResolved),
     /// From a transport.
     Transport(TransportEvent),
     /// From the control thread.
@@ -376,6 +386,7 @@ struct Bound {
 }
 
 enum Queued {
+    Ui(RequestId, crate::ui::UiRequest),
     Answer(RequestId, Result<Response, ApiError>),
     Local(RequestId, Request),
     Forward(RequestId, Command),
@@ -442,6 +453,9 @@ struct Session {
     /// `not_permitted` refusals.
     in_flight_method: Option<&'static str>,
     in_flight: bool,
+    pending_ui: Option<PendingUi>,
+    ui_ticket: Option<crate::ui::UiTicket>,
+    ui_commands: VecDeque<Command>,
     bucket: Bucket,
     /// `marker.add` only (protocol 1.50).
     marker_bucket: Bucket,
@@ -479,6 +493,7 @@ const MICRO: u64 = 1_000_000;
 
 /// The control API server's sessions. One per API thread.
 pub struct Server {
+    ui_serial: u64,
     config: ServerConfig,
     codec: Box<dyn Codec>,
     tokens: TokenStore,
@@ -515,6 +530,7 @@ impl Server {
             config.limits.local_reserved_connections,
         ));
         Self {
+            ui_serial: 0,
             config,
             codec: Box::new(JsonCodec),
             tokens,
@@ -667,6 +683,7 @@ impl Server {
             }
             Input::Transport(TransportEvent::Closed { id }) => self.transport_closed(id),
             Input::Reply(reply) => self.reply(reply, now),
+            Input::Ui(resolved) => self.resolve_ui(resolved, now),
             Input::Events(events) => self.events(&events),
         }
     }
@@ -763,6 +780,9 @@ impl Server {
                 in_flight_method: None,
                 queue: VecDeque::new(),
                 in_flight: false,
+                pending_ui: None,
+                ui_ticket: None,
+                ui_commands: VecDeque::new(),
                 bucket: Bucket {
                     level: u64::from(limits.request_burst) * MICRO,
                     at: now,
@@ -930,101 +950,17 @@ impl Server {
                 s.narrowable = false;
                 self.narrow(conn, incoming.id, &auth.token);
             }
-            (
-                Phase::Ready {
-                    scopes,
-                    irreversible,
-                    token,
-                },
-                request,
-            ) => {
+            (Phase::Ready { scopes, .. }, request) => {
                 s.narrowable = false;
                 if s.queue.len() >= limits.queue_len {
                     let e = ApiError::new(ErrorKind::Busy, "request queue full");
                     self.send_now(conn, Some(&incoming.id), Err(e));
                     return;
                 }
-                let mut queued = admit(incoming.id, request, scopes);
-                let token_kind = token.as_ref().map(|t| t.kind);
-                let token_name = token.map(|t| t.name);
-                if let Queued::Forward(id, command) = &queued {
-                    let method = command.method();
-                    // Checked after the scope: a caller learns of the permission only
-                    // for a method it could otherwise call (ADR-0052 decision 4).
-                    let effect = command.effect();
-                    let refusal = if effect.is_irreversible() && !irreversible {
-                        Some((
-                            "irreversible",
-                            format!(
-                                "{method} cannot be undone, and this token is not allowed actions that cannot be undone"
-                            ),
-                        ))
-                    } else if let Command::TokensCreate(p) = command
-                        && p.scopes.iter().any(|sc| !scopes.contains(sc))
-                    {
-                        // A token never gets more than its maker holds (ADR-0052
-                        // decision 4); only scopes are left, since a caller without
-                        // the permission is refused above.
-                        Some((
-                            "scopes",
-                            format!("{method} cannot give scopes this session does not hold"),
-                        ))
-                    } else if !irreversible && command.reaches_network() {
-                        Some((
-                            "network",
-                            format!(
-                                "{method} could connect to another computer, and this token is not allowed actions that cannot be undone"
-                            ),
-                        ))
-                    } else {
-                        None
-                    };
-                    match refusal {
-                        None if effect.is_irreversible() => {
-                            self.actions
-                                .push_back(Action::Audit(AuditEvent::Irreversible {
-                                    conn,
-                                    token: token_name.clone(),
-                                    kind: token_kind,
-                                    method,
-                                }));
-                        }
-                        None => {}
-                        Some((reason, message)) => {
-                            self.actions
-                                .push_back(Action::Audit(AuditEvent::NotPermitted {
-                                    conn,
-                                    token: token_name.clone(),
-                                    kind: token_kind,
-                                    method,
-                                    reason,
-                                }));
-                            let mut data = serde_json::Map::new();
-                            data.insert("reason".into(), reason.into());
-                            let e = ApiError::with_data(ErrorKind::NotPermitted, message, data);
-                            queued = Queued::Answer(id.clone(), Err(e));
-                        }
-                    }
-                }
-                if let Queued::Forward(_, command) = &queued {
-                    let scope = method_scope_of(command.method());
-                    if matches!(scope, Some(Scope::Admin | Scope::Plugins | Scope::Tokens)) {
-                        let detail = match command {
-                            Command::RecordStartToFile(p) => Some(p.path.clone()),
-                            Command::TokensCreate(p) => Some(p.name.clone()),
-                            Command::TokensRevoke(p) => Some(p.name.clone()),
-                            _ => None,
-                        };
-                        self.actions
-                            .push_back(Action::Audit(AuditEvent::Privileged {
-                                conn,
-                                token: token_name,
-                                kind: token_kind,
-                                method: command.method(),
-                                detail,
-                            }));
-                    }
-                }
+                let queued = match admit(incoming.id, request, scopes) {
+                    Queued::Forward(id, command) => self.admit_engine(conn, id, command),
+                    other => other,
+                };
                 self.enqueue(conn, queued, now);
             }
             (Phase::Closed, _) => {}
@@ -1039,7 +975,10 @@ impl Server {
         };
         if s.queue.len() >= max {
             let id = match &queued {
-                Queued::Answer(id, _) | Queued::Local(id, _) | Queued::Forward(id, _) => id.clone(),
+                Queued::Answer(id, _)
+                | Queued::Local(id, _)
+                | Queued::Forward(id, _)
+                | Queued::Ui(id, _) => id.clone(),
             };
             let e = ApiError::new(ErrorKind::Busy, "request queue full");
             self.send_now(conn, Some(&id), Err(e));
@@ -1237,22 +1176,57 @@ impl Server {
                     self.update_mask();
                     self.send_now(conn, Some(&id), Ok(Response::Done(Empty {})));
                 }
+                Queued::Local(id, Request::Describe(params)) => {
+                    let answer = describe(&params).map(Response::Describe);
+                    self.send_now(conn, Some(&id), answer);
+                }
                 Queued::Local(id, _) => {
-                    let d = Description {
-                        protocol: PROTOCOL_VERSION.into(),
-                        methods: METHODS
-                            .iter()
-                            .map(|m| MethodInfoOwned {
-                                name: m.name.into(),
-                                scope: m.scope,
-                                effect: Some(m.effect),
-                            })
-                            .collect(),
-                        topics: Topic::ALL.to_vec(),
-                    };
-                    self.send_now(conn, Some(&id), Ok(Response::Describe(d)));
+                    self.send_now(
+                        conn,
+                        Some(&id),
+                        Err(ApiError::new(
+                            ErrorKind::Internal,
+                            "unexpected local request",
+                        )),
+                    );
+                }
+                Queued::Ui(id, request) => {
+                    self.forward_ui(conn, id, request);
+                    return;
                 }
                 Queued::Forward(id, command) => {
+                    if s.ui_ticket
+                        .as_ref()
+                        .is_some_and(|ticket| !ticket.is_active())
+                    {
+                        self.reply(
+                            Reply {
+                                conn,
+                                id,
+                                result: Err(ApiError::new(
+                                    ErrorKind::Conflict,
+                                    "the UI request was cancelled",
+                                )),
+                            },
+                            now,
+                        );
+                        return;
+                    }
+                    let Phase::Ready {
+                        scopes,
+                        irreversible,
+                        token,
+                        ..
+                    } = &s.phase
+                    else {
+                        return;
+                    };
+                    let caller = Caller {
+                        token: token.as_ref().map(|t| t.name.clone()),
+                        irreversible: *irreversible,
+                        scopes: *scopes,
+                        remote: !s.peer.is_local(),
+                    };
                     if let Command::EventsSubscribe(sub) = &command {
                         for t in &sub.topics {
                             s.topics = s.topics.with(*t);
@@ -1275,21 +1249,9 @@ impl Server {
                         }
                         self.update_mask();
                     }
-                    let mut caller = Caller::local();
                     if let Some(s) = self.sessions.get_mut(&conn) {
                         s.in_flight = true;
                         s.in_flight_method = Some(command.method());
-                        if let Phase::Ready {
-                            irreversible,
-                            token,
-                            ..
-                        } = &s.phase
-                        {
-                            caller = Caller {
-                                token: token.as_ref().map(|t| t.name.clone()),
-                                irreversible: *irreversible,
-                            };
-                        }
                     }
                     self.actions.push_back(Action::Forward(Forwarded {
                         conn,
@@ -1304,11 +1266,32 @@ impl Server {
     }
 
     fn reply(&mut self, reply: Reply, now: Timestamp) {
-        let Reply { conn, id, result } = reply;
+        let Reply {
+            conn,
+            id,
+            mut result,
+        } = reply;
+        if self
+            .sessions
+            .get(&conn)
+            .and_then(|session| session.ui_ticket.as_ref())
+            .is_some_and(|ticket| !ticket.is_active())
+        {
+            result = Err(ApiError::new(
+                ErrorKind::Conflict,
+                "the UI request was cancelled",
+            ));
+        }
+        if self.continue_ui(conn, &id, &result, now) {
+            return;
+        }
         let Some(s) = self.sessions.get_mut(&conn) else {
             return;
         };
         s.in_flight = false;
+        if let Some(ticket) = s.ui_ticket.take() {
+            ticket.cancel();
+        }
         let method = s.in_flight_method.take();
         // A refusal made on the control thread is audited here, as it is forwarded
         // (ADR-0052 decision 5).
@@ -1515,6 +1498,14 @@ impl Server {
             return;
         }
         s.phase = Phase::Closed;
+        s.ui_commands.clear();
+        if let Some(ticket) = s.ui_ticket.take() {
+            ticket.cancel();
+        }
+        if let Some(pending) = s.pending_ui.take() {
+            pending.ticket.cancel();
+            s.in_flight = false;
+        }
         s.queue.clear();
         s.pending_auth = None;
         s.topics = TopicSet::EMPTY;
@@ -1533,6 +1524,14 @@ impl Server {
             return;
         };
         s.transport_closed = true;
+        s.ui_commands.clear();
+        if let Some(ticket) = s.ui_ticket.take() {
+            ticket.cancel();
+        }
+        if let Some(pending) = s.pending_ui.take() {
+            pending.ticket.cancel();
+            s.in_flight = false;
+        }
         if !matches!(s.phase, Phase::Closed) {
             s.phase = Phase::Closed;
             s.queue.clear();
@@ -1610,7 +1609,7 @@ fn admit(id: RequestId, request: Request, scopes: ScopeSet) -> Queued {
                 "the session is already authenticated",
             )),
         ),
-        Request::Describe | Request::Unsubscribe(_) => Queued::Local(id, request),
+        Request::Describe(_) | Request::Unsubscribe(_) => Queued::Local(id, request),
         Request::Command(Command::EventsSubscribe(sub)) => {
             if let Some(t) = sub
                 .topics
@@ -1635,5 +1634,67 @@ fn admit(id: RequestId, request: Request, scopes: ScopeSet) -> Queued {
             Queued::Forward(id, Command::EventsSubscribe(sub))
         }
         Request::Command(command) => Queued::Forward(id, command),
+        Request::Ui(request) => Queued::Ui(id, request),
     }
+}
+
+/// Most names in each list of `api.describe`'s parameters, and the longest name.
+const DESCRIBE_MAX_NAMES: usize = 64;
+const DESCRIBE_MAX_NAME_LEN: usize = 64;
+
+/// `api.describe` (ADR-0196): the catalogue, with schemas only when asked for, and
+/// only the namespaces' shards the selected methods live in are parsed.
+fn describe(params: &crate::request::DescribeParams) -> Result<Description, ApiError> {
+    use crate::request::DescribeDetail;
+    let bad = |what: &str| ApiError::new(ErrorKind::InvalidParams, what.to_owned());
+    for list in [&params.namespaces, &params.methods] {
+        if list.len() > DESCRIBE_MAX_NAMES || list.iter().any(|n| n.len() > DESCRIBE_MAX_NAME_LEN) {
+            return Err(bad("too many or too long names"));
+        }
+    }
+    let namespace_of = |name: &str| name.split('.').next().unwrap_or("").to_owned();
+    if let Some(unknown) = params
+        .namespaces
+        .iter()
+        .find(|ns| !METHODS.iter().any(|m| namespace_of(m.name) == **ns))
+    {
+        return Err(bad(&format!("no namespace {unknown:?}")));
+    }
+    if let Some(unknown) = params
+        .methods
+        .iter()
+        .find(|name| !METHODS.iter().any(|m| m.name == name.as_str()))
+    {
+        return Err(bad(&format!("no method {unknown:?}")));
+    }
+    let all = params.namespaces.is_empty() && params.methods.is_empty();
+    let mut methods = Vec::new();
+    for m in METHODS {
+        let selected = all
+            || params.methods.iter().any(|n| n == m.name)
+            || params.namespaces.contains(&namespace_of(m.name));
+        if !selected {
+            continue;
+        }
+        let pair = match params.detail {
+            DescribeDetail::Index => None,
+            DescribeDetail::Schemas => match crate::schema::method_schemas(m.name) {
+                Some(Ok(pair)) => Some(pair),
+                Some(Err(why)) => return Err(ApiError::new(ErrorKind::Internal, why)),
+                None => None,
+            },
+        };
+        methods.push(MethodInfoOwned {
+            name: m.name.into(),
+            scope: m.scope,
+            effect: Some(m.effect),
+            input_schema: pair.map(|p| p.input_schema.clone()),
+            output_schema: pair.map(|p| p.output_schema.clone()),
+        });
+    }
+    Ok(Description {
+        protocol: PROTOCOL_VERSION.into(),
+        methods,
+        topics: Topic::ALL.to_vec(),
+    })
 }

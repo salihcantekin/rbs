@@ -202,3 +202,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0192](0192-transactional-group-show.md) | Transactional group Show | Superseded by ADR-0193 |
 | [0193](0193-simple-group-show-and-scroll-resources.md) | Simple group Show and group Scroll resources (supersedes ADR-0190, ADR-0191, ADR-0192; ADR-0185 decision 5 in part) | Accepted |
 | [0194](0194-member-row-selects-the-member.md) | A member row in the Sources list selects that member (supersedes ADR-0182 decision 9 in part) | Accepted |
+| [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Accepted |

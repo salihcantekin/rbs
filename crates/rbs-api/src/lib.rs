@@ -27,12 +27,14 @@ pub mod event;
 pub mod exposure;
 pub mod location;
 pub mod request;
+pub mod schema;
 pub mod scope;
 pub mod session;
 pub mod thread;
 pub mod token;
 pub mod transport;
 pub mod types;
+pub mod ui;
 pub mod wake;
 
 pub use codec::{Codec, JsonCodec, RequestId};

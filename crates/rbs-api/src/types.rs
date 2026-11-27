@@ -6,14 +6,23 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod calibration;
 mod capture_target;
 mod monitoring;
+mod obs_import;
+mod output_canvas;
 mod output_settings;
 mod scroll;
 pub(crate) mod serde_defaults;
+mod snapshot;
 mod source_fault;
+mod source_kind;
+mod sync_device;
+pub use calibration::*;
 pub use capture_target::CaptureTarget;
 pub use monitoring::*;
+pub use obs_import::*;
+pub use output_canvas::{OutputCanvas, OutputTarget};
 pub use output_settings::{
     ReplaySettings, SeparateFilesSettings, Settings, StreamSettings, StreamSettingsPatch,
 };
@@ -21,23 +30,14 @@ pub use scroll::{
     ItemScroll, ScrollDirection, ScrollFinished, ScrollRepeat, ScrollReturn, ScrollStart,
 };
 use serde_defaults::*;
+pub use snapshot::{SeqMap, Snapshot};
 pub use source_fault::SourceFault;
-
-/// A change counter per state key (`"record.state"`, later `"source.changed:7"`).
-pub type SeqMap = BTreeMap<String, u64>;
-
-/// A state query's answer: the data and the `seq` of each state key it includes, so a
-/// client ignores events with an equal or lower `seq`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Snapshot<T> {
-    /// `seq` per state key included in `data`.
-    pub seq: SeqMap,
-    /// The state.
-    pub data: T,
-}
+pub use source_kind::SourceKind;
+pub use sync_device::*;
 
 /// Width and height in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Dimensions {
     /// Width in pixels.
     pub width: u32,
@@ -47,6 +47,7 @@ pub struct Dimensions {
 
 /// The canvas's size and frame rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Canvas {
     /// Width in pixels.
     pub width: u32,
@@ -58,42 +59,13 @@ pub struct Canvas {
     pub fps_den: u32,
 }
 
-/// A kind of source the user can add.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
-    /// A whole display.
-    Screen,
-    /// One window.
-    Window,
-    /// A camera or capture card.
-    Camera,
-    /// A microphone or line input.
-    AudioInput,
-    /// What the computer plays.
-    SystemAudio,
-    /// What one application plays.
-    ApplicationAudio,
-    /// A picture: a file or a built-in sample (protocol 1.34, ADR-0075).
-    Image,
-    /// A solid colour (protocol 1.34, ADR-0075).
-    Color,
-    /// A local media file (protocol TBD, ADR-0108).
-    Media,
-    /// A browser page from the helper process (protocol TBD, ADR-0109).
-    Browser,
-    /// A text drawn by the server's text renderer (protocol 1.75, ADR-0129).
-    Text,
-    /// The pictures of one folder shown one after another (protocol 1.102, ADR-0171).
-    Slideshow,
-}
-
 /// How a source is doing.
 ///
 /// Serialised with a `state` tag. A client built for an older protocol treats a `state`
 /// it does not know as `failed`; this decoder does the same, taking the words from
 /// `reason` or `detail`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SourceStatus {
     /// It runs.
@@ -144,6 +116,7 @@ impl<'de> Deserialize<'de> for SourceStatus {
 
 /// One source of the program scene.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceInfo {
     /// Its id in the scene collection.
     pub id: u32,
@@ -249,6 +222,7 @@ pub struct SourceInfo {
 
 /// One filter of a source (protocol 1.8, ADR-0062).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterInfo {
     /// Its id, unique in the collection.
     pub id: u32,
@@ -263,6 +237,7 @@ pub struct FilterInfo {
 
 /// `filter.types`' answer (protocol 1.8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterTypeList {
     /// The built-in filter types, in the order the app lists them.
     pub types: Vec<FilterTypeInfo>,
@@ -270,6 +245,7 @@ pub struct FilterTypeList {
 
 /// A filter type and its settings schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterTypeInfo {
     /// `org.rbs.filter.<name>` for a video filter, `org.rbs.audio-filter.<name>` for an
     /// audio filter.
@@ -296,6 +272,7 @@ fn video_domain() -> String {
 
 /// One option of a `"choice"` setting (protocol 1.16).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterOption {
     /// The value stored in settings.
     pub key: String,
@@ -305,6 +282,7 @@ pub struct FilterOption {
 
 /// One setting of a filter type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterField {
     /// Settings key.
     pub key: String,
@@ -341,6 +319,7 @@ pub struct FilterField {
 
 /// A scene as `scene.list` lists it (protocol 1.6, ADR-0059).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneInfo {
     /// Its id in the scene collection.
     pub id: u32,
@@ -358,6 +337,7 @@ pub struct SceneInfo {
 /// A scene's transition override (protocol 1.86, ADR-0135 decision 8): an absent part
 /// is the collection's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SceneTransition {
     /// The kind; absent: the collection's kind.
@@ -371,6 +351,7 @@ pub struct SceneTransition {
 /// When a source runs (protocol 1.95, ADR-0152): the lowest level at which it is
 /// Active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityRun {
     /// While it is in any scene, hidden or off air.
@@ -383,6 +364,7 @@ pub enum ActivityRun {
 
 /// What a source does when it goes on air again (protocol 1.95, ADR-0152).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityReturn {
     /// As if it had kept running while away.
@@ -395,6 +377,7 @@ pub enum ActivityReturn {
 
 /// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GlideEasing {
     /// Straight lerp.
     #[serde(rename = "linear")]
@@ -407,6 +390,7 @@ pub enum GlideEasing {
 
 /// Collection or source glide timing (protocol 1.35, ADR-0100).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Glide {
     /// Milliseconds in `0..=5000`. `0` jumps.
     pub duration_ms: u32,
@@ -432,6 +416,7 @@ impl Glide {
 
 /// What a program-scene change looks like (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TransitionKind {
     /// The new scene at once.
@@ -460,6 +445,7 @@ impl TransitionKind {
 
 /// Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum SwipeDirection {
     /// Towards the left edge.
@@ -475,6 +461,7 @@ pub enum SwipeDirection {
 
 /// Fade settings (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FadeTransition {
     /// Milliseconds in `0..=5000`; `0` cuts.
@@ -498,6 +485,7 @@ impl Default for FadeTransition {
 
 /// Swipe or Slide settings (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SwipeTransition {
     /// Milliseconds in `0..=5000`; `0` cuts.
@@ -520,6 +508,7 @@ impl Default for SwipeTransition {
 
 /// Stinger settings (protocol 1.89, ADR-0140).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StingerTransition {
     /// The media-file source played over the change; `null` for none (a Stinger change
@@ -546,6 +535,7 @@ impl StingerTransition {
 /// The collection's transition (protocol 1.81, ADR-0128): the kind and each kind's
 /// settings. Move's settings are the collection `glide`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Transition {
     /// The kind a program change uses in studio mode.
     pub kind: TransitionKind,
@@ -611,6 +601,7 @@ pub enum TransitionPhase {
 
 /// A source of the collection, wherever it is placed (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceEntry {
     /// Its id.
     pub id: u32,
@@ -631,6 +622,7 @@ pub struct SourceEntry {
 
 /// The studio canvas's master volume and mute (protocol 1.15, ADR-0081).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Master {
     /// A linear factor from 0 to 1.
     pub volume: f32,
@@ -658,6 +650,7 @@ impl Master {
 /// show in the Scenes panel's order, the one on air, and every source of the
 /// collection by name (what `item.add` can place).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneList {
     /// The scenes.
     pub scenes: Vec<SceneInfo>,
@@ -685,6 +678,7 @@ pub struct SceneList {
 /// A picture's place on the canvas (protocol 1.3): the layout the studio's canvas
 /// shows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ItemLayout {
     /// Top-left corner of the unrotated box, canvas pixels.
     pub position: [f32; 2],
@@ -706,6 +700,7 @@ pub struct ItemLayout {
 
 /// The outline of a picture inside its box (ADR-0053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ShapeKind {
     /// The box, with corners rounded by `radius`.
@@ -725,6 +720,7 @@ pub enum ShapeKind {
 /// units (canvas pixels for an item on the canvas); colours are `#rrggbb` or
 /// `#rrggbbaa`, sRGB with straight alpha. `{}` is the plain picture.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ItemStyle {
     /// The outline.
@@ -743,6 +739,7 @@ pub struct ItemStyle {
 
 /// A border (ADR-0053).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StyleBorder {
     /// Width, more than 0.
@@ -753,6 +750,7 @@ pub struct StyleBorder {
 
 /// A shadow (ADR-0053).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StyleShadow {
     /// Offset, x right and y down.
@@ -783,6 +781,7 @@ pub fn format_color(c: [u8; 4]) -> String {
 
 /// A video encoder the user can pick, with what its quality settings can be.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EncoderInfo {
     /// Its adapter id.
     pub id: String,
@@ -798,6 +797,7 @@ pub struct EncoderInfo {
 
 /// The studio: canvas, what can be added, encoders, whether recording is possible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StudioInfo {
     /// The canvas.
     pub canvas: Canvas,
@@ -811,6 +811,7 @@ pub struct StudioInfo {
 
 /// A recording container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Container {
     /// Matroska (`.mkv`).
@@ -827,6 +828,7 @@ pub enum Container {
 
 /// How the encoder spends bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RateMode {
     /// Constant bitrate.
@@ -839,6 +841,7 @@ pub enum RateMode {
 
 /// Speed versus quality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Preset {
     /// Best quality the machine sustains.
@@ -852,6 +855,7 @@ pub enum Preset {
 /// A recording profile as `output.profiles` lists it (`read`): no folder, which only
 /// `settings.get` (`admin`) shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputProfile {
     /// Its id, passed to `record.start`.
     pub id: String,
@@ -871,6 +875,7 @@ pub struct OutputProfile {
 
 /// Every setting of a recording profile (`settings.get`, `settings.set`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordingProfile {
     /// Its id.
     pub id: String,
@@ -939,6 +944,7 @@ pub struct RecordingProfile {
 
 /// A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordingMarkers {
     /// Moves a manual marker this many milliseconds earlier, 0 to 30 000.
@@ -972,6 +978,7 @@ impl RecordingMarkers {
 
 /// An editor project format (protocol 1.58, ADR-0089 decision 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectFormat {
     /// FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).
@@ -983,6 +990,7 @@ pub enum ProjectFormat {
 
 /// The video codec of a recording or a stream. H.264 is omitted on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum VideoCodec {
     /// H.264.
@@ -1004,6 +1012,7 @@ impl VideoCodec {
 /// How a recording or a stream encodes colour (protocol 1.37). Omitted when
 /// [`Delivery::Video`], so an older file and a 1.36 client stay on Rec. 709 limited range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Delivery {
     /// Rec. 709 camera encoding, limited range. YouTube, TV and streams.
@@ -1023,6 +1032,7 @@ impl Delivery {
 /// How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same
 /// fields as a [`RecordingProfile`]'s encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Encoding {
     /// The video encoder's adapter id, or `null` for the best one.
     pub encoder: Option<String>,
@@ -1070,6 +1080,7 @@ where
 
 /// What a recording is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RecordState {
     /// Nothing records.
@@ -1110,6 +1121,7 @@ pub enum RecordState {
 
 /// A marked source that has no file in a running recording (protocol 1.46).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SkippedTrack {
     /// The source (`source.list`).
     pub source: u32,
@@ -1121,6 +1133,7 @@ pub struct SkippedTrack {
 
 /// The feeds of a source marked to record separately (protocol 1.52).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordTracks {
     /// Its picture.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1136,6 +1149,7 @@ pub struct RecordTracks {
 /// The form of a marked picture in a source row (protocol 1.52). The request side is
 /// `request::VideoAs`; this one reads a later server's value as `other`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PictureForm {
     /// Images for a still source, a video file otherwise.
@@ -1158,6 +1172,7 @@ impl PictureForm {
 
 /// Why a marked source has no file (protocol 1.46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SkipReason {
     /// The program mix does not hear the source when the recording starts.
@@ -1179,6 +1194,7 @@ pub enum SkipReason {
 
 /// One separate file of a running recording (protocol 1.46, ADR-0086).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordTrack {
     /// The file's name inside the recording's folder. No directory. For `image`, the
     /// first image (`<name>.png`; later ones are `<name>-2.png`, ...).
@@ -1191,6 +1207,7 @@ pub struct RecordTrack {
 
 /// What a separate file carries (protocol 1.46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TrackRole {
     /// The source's picture as a video file (written from 1.52).
@@ -1204,68 +1221,9 @@ pub enum TrackRole {
     Other,
 }
 
-/// The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputCanvas {
-    /// The studio's main canvas.
-    #[default]
-    Main,
-    /// The vertical canvas (`canvas.add_vertical`).
-    Vertical,
-}
-
-impl OutputCanvas {
-    /// Every canvas an output can use, main first.
-    pub const ALL: [OutputCanvas; 2] = [OutputCanvas::Main, OutputCanvas::Vertical];
-
-    /// Its number in the studio's set of canvases: the object id of its
-    /// `record.canvas_state` and `stream.canvas_state` keys.
-    pub const fn object(self) -> u32 {
-        match self {
-            OutputCanvas::Main => 0,
-            OutputCanvas::Vertical => 1,
-        }
-    }
-}
-
-/// The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:
-/// one canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,
-/// ADR-0111 decision 3).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputTarget {
-    /// The studio's main canvas.
-    #[default]
-    Main,
-    /// The vertical canvas.
-    Vertical,
-    /// Every canvas the studio runs, main first (protocol 1.42).
-    All,
-}
-
-impl OutputTarget {
-    /// The one canvas asked for; `None` for [`OutputTarget::All`].
-    pub const fn single(self) -> Option<OutputCanvas> {
-        match self {
-            OutputTarget::Main => Some(OutputCanvas::Main),
-            OutputTarget::Vertical => Some(OutputCanvas::Vertical),
-            OutputTarget::All => None,
-        }
-    }
-}
-
-impl From<OutputCanvas> for OutputTarget {
-    fn from(c: OutputCanvas) -> Self {
-        match c {
-            OutputCanvas::Main => OutputTarget::Main,
-            OutputCanvas::Vertical => OutputTarget::Vertical,
-        }
-    }
-}
-
 /// What a call with `canvas: "all"` did with one canvas's output (protocol 1.42).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OutputOutcome {
     /// Start: it started now.
@@ -1294,6 +1252,7 @@ pub enum OutputOutcome {
 /// The error object of a refused entry: the same `code`, `message` and `data.kind` a
 /// single-canvas call would answer with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputError {
     /// The JSON-RPC error code.
     pub code: i32,
@@ -1305,6 +1264,7 @@ pub struct OutputError {
 
 /// `data` of an [`OutputError`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputErrorData {
     /// The machine-readable error.
     pub kind: crate::error::ErrorKind,
@@ -1328,6 +1288,7 @@ impl From<&crate::error::ApiError> for OutputError {
 
 /// One canvas's entry in an `all` answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputEntry {
     /// The canvas.
     pub canvas: OutputCanvas,
@@ -1358,6 +1319,7 @@ pub struct OutputEntry {
 /// The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with
 /// `canvas: "all"` (protocol 1.42): one entry per canvas, main first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputsResult {
     /// The entries.
     pub outputs: Vec<OutputEntry>,
@@ -1365,6 +1327,7 @@ pub struct OutputsResult {
 
 /// Which output kind `output.set_with_vertical` changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OutputKind {
     /// Recording.
@@ -1376,6 +1339,7 @@ pub enum OutputKind {
 /// Whether Record and Go live also start and stop the vertical output (protocol 1.42,
 /// ADR-0111 decision 4). A server older than 1.42 has none: main only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct VerticalWithMain {
     /// Record also starts and stops the vertical recording.
     pub record_with_main: bool,
@@ -1387,6 +1351,7 @@ pub struct VerticalWithMain {
 /// 5): part of `settings.get`, `settings.set` and `settings.changed`, and of
 /// `loudness.status`. Values are finite; equality compares them bit for bit.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LoudnessSettings {
     /// The target, LUFS (-40 to -5): the mark on the Master's loudness bar.
     pub target: f32,
@@ -1407,6 +1372,7 @@ impl Eq for LoudnessSettings {}
 /// A recording state of a canvas other than the main one (`record.canvas_state`,
 /// protocol 1.29): the `record.state` object with `canvas` added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CanvasRecordState {
     /// The canvas.
     pub canvas: OutputCanvas,
@@ -1418,6 +1384,7 @@ pub struct CanvasRecordState {
 /// A stream state of a canvas other than the main one (`stream.canvas_state`,
 /// protocol 1.29): the `stream.state` object with `canvas` added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CanvasStreamState {
     /// The canvas.
     pub canvas: OutputCanvas,
@@ -1428,6 +1395,7 @@ pub struct CanvasStreamState {
 
 /// How a recording ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordingSummary {
     /// Why it stopped on its own, or `null` when it was asked to.
     pub failure: Option<String>,
@@ -1439,6 +1407,7 @@ pub struct RecordingSummary {
 
 /// How a stream reaches its server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StreamProtocol {
     /// RTMP (`rtmp://`), with a stream key.
@@ -1450,6 +1419,7 @@ pub enum StreamProtocol {
 /// What the stream is doing. The server's address is not part of it: it is a setting,
 /// and the stream key is never shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum StreamState {
     /// Nothing streams.
@@ -1552,6 +1522,7 @@ pub(crate) fn yes() -> bool {
 /// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its
 /// server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LiveDestination {
     /// Its id in the output profile (`stream.destinations`).
     pub id: u32,
@@ -1576,6 +1547,7 @@ pub struct LiveDestination {
 
 /// Where one destination of a live stream stands (protocol 1.77).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationState {
     /// Started; not connected yet.
@@ -1593,6 +1565,7 @@ pub enum DestinationState {
 /// One saved destination (`stream.destinations`, protocol 1.77, ADR-0127 decision 16).
 /// Never its server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamDestination {
     /// Its id, unique in the output profile and never reused.
     pub id: u32,
@@ -1612,6 +1585,7 @@ pub struct StreamDestination {
 
 /// Whether a destination shares the stream's encoding (protocol 1.77).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationEncodingKind {
     /// The stream's encoder, shared.
@@ -1622,6 +1596,7 @@ pub enum DestinationEncodingKind {
 
 /// `stream.destinations` (protocol 1.77).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamDestinations {
     /// The asked canvas's destinations (both canvases' without `canvas`), by id.
     pub destinations: Vec<StreamDestination>,
@@ -1629,6 +1604,7 @@ pub struct StreamDestinations {
 
 /// How a stream ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamSummary {
     /// Why it stopped on its own, or `null` when it was asked to.
     pub failure: Option<String>,
@@ -1654,6 +1630,7 @@ pub struct SourceLevels {
 
 /// One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LibraryEntry {
     /// Its stable id, passed to `profile.switch` and `collection.switch`.
     pub id: String,
@@ -1664,6 +1641,7 @@ pub struct LibraryEntry {
 /// The output profiles or scene collections (`profile.list`, `collection.list`;
 /// protocol 1.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Library {
     /// Every entry, by name.
     pub entries: Vec<LibraryEntry>,
@@ -1676,83 +1654,9 @@ pub struct Library {
     pub pending: bool,
 }
 
-/// `import.obs.scan` (protocol 1.82): what OBS's settings folders on the server's
-/// computer hold, by name only (never a path).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObsScan {
-    /// Scene collection names, as `import.obs.check` takes them.
-    pub collections: Vec<String>,
-    /// Profile names.
-    pub profiles: Vec<String>,
-}
-
-/// What an OBS import brings exactly (protocol 1.82).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObsCounts {
-    /// Scenes.
-    pub scenes: u32,
-    /// Sources.
-    pub sources: u32,
-    /// Items placed in scenes.
-    pub items: u32,
-    /// Filters.
-    pub filters: u32,
-}
-
-/// One OBS object or setting not brought exactly (protocol 1.82, ADR-0131
-/// decision 11). Never holds a credential or a full path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObsReportEntry {
-    /// `approximated`, `skipped` or `not-chosen`.
-    pub outcome: String,
-    /// `scene`, `source`, `filter`, `item`, `transition`, `hotkey`, `profile` or
-    /// `setting`.
-    pub area: String,
-    /// The OBS name.
-    pub obs_name: String,
-    /// The OBS type id; absent for a setting.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub obs_type: String,
-    /// The scenes it is in.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scenes: Vec<String>,
-    /// Why, in one sentence.
-    pub reason: String,
-    /// What the user can do.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
-}
-
-/// `import.obs.check` (protocol 1.82): the report; nothing was written.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObsCheck {
-    /// The OBS collection's name.
-    pub name: String,
-    /// What comes across exactly.
-    pub exact: ObsCounts,
-    /// What does not, in the order met.
-    pub entries: Vec<ObsReportEntry>,
-}
-
-/// `import.obs.run` (protocol 1.82): what was written.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObsRun {
-    /// The new scene collection (`collection.switch` takes its id).
-    pub collection: LibraryEntry,
-    /// The new output profile, when one was written.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<LibraryEntry>,
-    /// Hotkeys added as shortcuts.
-    pub shortcuts_added: u32,
-    /// The check's report.
-    pub report: ObsCheck,
-    /// What writing left out.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<ObsReportEntry>,
-}
-
 /// Whether the virtual camera is on this computer (protocol 1.12, ADR-0066).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum VcamInstall {
     /// Apps can list the camera.
@@ -1768,6 +1672,7 @@ pub enum VcamInstall {
 /// What the virtual camera's session did with the frames since sending started
 /// (the virtual camera spec, "Ring and stats").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct VcamFrames {
     /// Frames handed to the consumer side.
     pub sent: u64,
@@ -1787,6 +1692,7 @@ pub struct VcamFrames {
 
 /// `replay.status` and `replay.changed` (protocol 1.27, ADR-0088).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReplayStatus {
     /// The buffer runs and keeps the past.
     pub armed: bool,
@@ -1813,6 +1719,7 @@ pub struct ReplayStatus {
 /// A level of recording protection (protocol 1.49, ADR-0090 decision 9). A client
 /// treats a level it does not know as `warning`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProtectionLevel {
     /// Nothing could be read (the platform has no reading, or the probe timed out).
@@ -1830,6 +1737,7 @@ pub enum ProtectionLevel {
 
 /// What a protection alert is about (protocol 1.49).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProtectionKind {
     /// A disk a recording writes to is filling.
@@ -1846,6 +1754,7 @@ pub enum ProtectionKind {
 
 /// One disk (volume) at least one running recording writes to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtectionDisk {
     /// Its level.
     pub level: ProtectionLevel,
@@ -1862,6 +1771,7 @@ pub struct ProtectionDisk {
 
 /// One running output's lag level.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtectionOutput {
     /// Its canvas.
     pub canvas: OutputCanvas,
@@ -1873,6 +1783,7 @@ pub struct ProtectionOutput {
 
 /// System memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtectionMemory {
     /// Its level.
     pub level: ProtectionLevel,
@@ -1883,6 +1794,7 @@ pub struct ProtectionMemory {
 
 /// One thing the user should know, with a plain sentence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtectionAlert {
     /// What it is about.
     pub kind: ProtectionKind,
@@ -1900,6 +1812,7 @@ pub struct ProtectionAlert {
 
 /// `protection.status` and `protection.changed` (protocol 1.49, ADR-0090 decision 9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtectionStatus {
     /// A guard runs: some recording or stream runs. While false the lists are empty.
     pub guarded: bool,
@@ -1942,6 +1855,7 @@ impl ProtectionStatus {
 
 /// `vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct VcamStatus {
     /// Whether the camera is added; `null` while the app has not read it yet.
     pub state: Option<VcamInstall>,
@@ -1966,6 +1880,7 @@ pub struct VcamStatus {
 /// The level of a plan or of one resource in `record.estimate` (protocol 1.53,
 /// ADR-0087 decision 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateLevel {
     /// Below 70 % of a rate limit, or within a count limit.
@@ -1983,6 +1898,7 @@ pub enum EstimateLevel {
 
 /// A resource the estimate counts (protocol 1.53).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateResource {
     /// Encoder sessions on one adapter.
@@ -2012,6 +1928,7 @@ pub enum EstimateResource {
 
 /// The unit of a resource row (protocol 1.53).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateUnit {
     /// Encoder sessions.
@@ -2035,6 +1952,7 @@ pub enum EstimateUnit {
 
 /// Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateCode {
     /// A limit no calibration can measure is not known.
@@ -2074,6 +1992,7 @@ pub enum EstimateCode {
 
 /// A separate track named by the estimate: its source and what it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EstimateTrack {
     /// The source's id.
     pub source: u32,
@@ -2083,6 +2002,7 @@ pub struct EstimateTrack {
 
 /// One resource of `record.estimate` (protocol 1.53).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EstimateRow {
     /// The resource.
     pub resource: EstimateResource,
@@ -2092,9 +2012,11 @@ pub struct EstimateRow {
     pub scope: Option<String>,
     /// What the plan needs, in `unit`. Count units and bytes are whole numbers.
     #[serde(serialize_with = "whole_if_integral")]
+    #[cfg_attr(feature = "schema", schemars(with = "f64"))]
     pub need: f64,
     /// The limit, `None` when unknown or unlimited (`level` says which).
     #[serde(serialize_with = "whole_if_integral_opt")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<f64>"))]
     pub limit: Option<f64>,
     /// The unit of `need` and `limit`.
     pub unit: EstimateUnit,
@@ -2128,6 +2050,7 @@ fn whole_if_integral_opt<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<
 
 /// A reason of `record.estimate` (protocol 1.53).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EstimateReason {
     /// The code.
     pub code: EstimateCode,
@@ -2141,6 +2064,7 @@ pub struct EstimateReason {
 
 /// How many separate tracks of one kind fit (protocol 1.53, ADR-0087 decision 3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MaxTracks {
     /// The total that fits; `None` when no resource that grows with them is known.
     pub count: Option<u32>,
@@ -2164,6 +2088,7 @@ pub struct MaxTracks {
 
 /// Both kinds of [`MaxTracks`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MaxTracksByKind {
     /// Separate video files.
     pub video: MaxTracks,
@@ -2173,6 +2098,7 @@ pub struct MaxTracksByKind {
 
 /// What one separate track adds (protocol 1.53).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrackCost {
     /// The source's id.
     pub source: u32,
@@ -2181,236 +2107,6 @@ pub struct TrackCost {
     /// What it adds per resource, keyed by resource name. A client skips a key it
     /// does not know.
     pub cost: std::collections::BTreeMap<String, f64>,
-}
-
-/// A code of `calibration.state` (protocol 1.55, ADR-0087 decision 4): why a series
-/// or the write has no full result, or why a run failed. A client reads an unknown
-/// code as `other`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalibrationCode {
-    /// The adapter does not support the class.
-    Unsupported,
-    /// No free session at the first open: other programs may hold them.
-    Busy,
-    /// A session did not open.
-    OpenFailed,
-    /// An encode failed.
-    EncodeFailed,
-    /// The folder has no room for the write test.
-    NoRoom,
-    /// The write test failed.
-    WriteFailed,
-    /// The run's time ended it first.
-    TimeLimit,
-    /// A cancel ended it first.
-    Cancelled,
-    /// A device was lost: nothing was written.
-    DeviceLost,
-    /// The run panicked.
-    Panicked,
-    /// The run ended without an answer.
-    Ended,
-    /// The run did not answer by its deadline.
-    Hung,
-    /// A code this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// Why a calibration series stopped, which says what its `sessions` means (protocol
-/// 1.55, spec `output-estimate.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalibrationStop {
-    /// An open was refused: the session cap.
-    Refused,
-    /// The next step was late: a throughput limit.
-    Late,
-    /// The plan's ceiling passed: no cap.
-    Ceiling,
-    /// The time ended it: a lower bound.
-    Limit,
-    /// A cancel ended it: a lower bound.
-    Cancelled,
-    /// An error after step 1 ended it: a lower bound.
-    Error,
-    /// A reason this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// The part of a calibration run that runs (protocol 1.55).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalibrationPart {
-    /// The encoder sessions.
-    Encoder,
-    /// The folder write.
-    Write,
-    /// The export of separate video files (protocol 1.57).
-    Export,
-    /// A part this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// A class of video encodes (protocol 1.55).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CalibrationClass {
-    /// Codec name.
-    pub codec: String,
-    /// Size class (`720`, `1080`, `1440`, `2160`, `above-2160`).
-    pub size: String,
-    /// Frame-rate class (`30`, `60`, `above-60`).
-    pub fps: String,
-    /// Rate-control class (`cbr`, `vbr`, `cq`).
-    pub rate: String,
-}
-
-/// One series' result in `calibration.state` (protocol 1.55).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CalibrationEncoder {
-    /// Adapter id.
-    pub adapter: String,
-    /// The class.
-    #[serde(flatten)]
-    pub class: CalibrationClass,
-    /// The highest passing session count.
-    pub sessions: u32,
-    /// `sessions × width × height × fps`.
-    pub pixels_per_second: u64,
-    /// Why the series stopped.
-    pub stopped_by: CalibrationStop,
-}
-
-/// A part with no full result (protocol 1.55).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CalibrationSkip {
-    /// Why.
-    pub code: CalibrationCode,
-    /// The series' adapter; absent for the write.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adapter: Option<String>,
-    /// The series' class; absent for the write.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class: Option<CalibrationClass>,
-}
-
-/// One measured export class (protocol 1.57, ADR-0087 step D2).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CalibrationExport {
-    /// Size class: `720`, `1080`, `1440`, `2160` or `above-2160`.
-    pub size: String,
-    /// The export format.
-    pub format: CalibrationExportFormat,
-    /// The render thread's time of one export per frame, in microseconds (at least a
-    /// frame period when it did not keep up).
-    pub time_us: u64,
-    /// The GPU's sustained time per export in microseconds, for diagnosis; judged by
-    /// nothing. `null` with too few conversions.
-    pub gpu_us: Option<u64>,
-    /// No conversion found every readback in flight and the frames arrived.
-    pub kept_up: bool,
-}
-
-/// The format of an export (protocol 1.57).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalibrationExportFormat {
-    /// 8-bit 4:2:0.
-    Nv12,
-    /// 10-bit 4:2:0.
-    P010,
-    /// A format this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// An export class with no result (protocol 1.57).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CalibrationExportSkip {
-    /// Size class.
-    pub size: String,
-    /// The export format.
-    pub format: CalibrationExportFormat,
-    /// Why.
-    pub code: CalibrationExportCode,
-}
-
-/// Why an export class has no result (protocol 1.57): its own closed list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalibrationExportCode {
-    /// No throwaway GPU device could be made.
-    GpuUnavailable,
-    /// The export could not be built or failed.
-    ExportFailed,
-    /// The throwaway device was lost; the run went on.
-    DeviceLost,
-    /// The time budget ended it first, or the GPU did not answer in time.
-    TimeLimit,
-    /// A cancel ended it first.
-    Cancelled,
-    /// A code this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// `calibration.status` and the topic `calibration.state` (protocol 1.55, ADR-0087
-/// decisions 4 and 7). No member carries a path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum CalibrationState {
-    /// No run in this app run.
-    #[default]
-    Idle,
-    /// A run is active.
-    Running {
-        /// Steps started so far.
-        step: u32,
-        /// The upper bound of steps.
-        steps: u32,
-        /// What runs now.
-        part: CalibrationPart,
-        /// The adapter measured now; `null` during the write.
-        adapter: Option<String>,
-        /// A cancel was asked for and the run is ending.
-        cancelling: bool,
-    },
-    /// The last run ended; it stays until the next run.
-    Done {
-        /// Some part stopped early or was skipped for time.
-        partial: bool,
-        /// A cancel ended it.
-        cancelled: bool,
-        /// `calibration.toml` was written.
-        saved: bool,
-        /// The series' results.
-        encoders: Vec<CalibrationEncoder>,
-        /// The folder's synced write speed in bytes per second.
-        write_speed: Option<u64>,
-        /// The write stopped early.
-        write_partial: bool,
-        /// The parts with no full result.
-        skipped: Vec<CalibrationSkip>,
-        /// The export classes measured (protocol 1.57).
-        #[serde(default)]
-        exports: Vec<CalibrationExport>,
-        /// The export classes with no result (protocol 1.57).
-        #[serde(default)]
-        exports_skipped: Vec<CalibrationExportSkip>,
-    },
-    /// The last run failed; nothing was written. It stays until the next run.
-    Failed {
-        /// Why.
-        code: CalibrationCode,
-        /// A short message with no path.
-        message: String,
-    },
-    /// A state this client does not know.
-    #[serde(other)]
-    Other,
 }
 
 /// Why the start gate refused a `record.start` (protocol 1.54, ADR-0087 decisions 5
@@ -2469,6 +2165,7 @@ impl StartRefusal {
 
 /// `record.estimate`'s answer (protocol 1.53, ADR-0087 decision 7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EstimateAnswer {
     /// The plan's level (`fits`, `heavy` or `over`), free disk space included.
     pub level: EstimateLevel,
@@ -2488,6 +2185,7 @@ pub struct EstimateAnswer {
 
 /// The estimate in `record.start`'s answer (protocol 1.53).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EstimateSummary {
     /// The plan's level.
     pub level: EstimateLevel,
@@ -2577,62 +2275,9 @@ pub struct SyncMeasureChanged {
     pub state: SyncMeasureState,
 }
 
-/// An audio device whose offset is remembered (protocol 1.66, ADR-0126 decision 7):
-/// the source type and its `adapter` and `target` settings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeviceKey {
-    /// Source type id.
-    #[serde(rename = "type")]
-    pub type_id: String,
-    /// Adapter id.
-    pub adapter: String,
-    /// The adapter's device id.
-    pub target: String,
-}
-
-/// How a remembered offset was set (protocol 1.66). A client reads an unknown value
-/// as `other`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceSyncOrigin {
-    /// Applied from a measurement.
-    Measured,
-    /// Set by hand or through `source.set_sync_offset` without a measurement.
-    Manual,
-    /// A value this client does not know.
-    #[serde(other)]
-    Other,
-}
-
-/// What a measured offset was measured against (protocol 1.66).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceSyncReference {
-    /// The reference's device, when it has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<DeviceKey>,
-    /// The reference's name when measured.
-    pub name: String,
-}
-
-/// One entry of `sync.devices` (protocol 1.66).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceSyncEntry {
-    /// The device.
-    pub key: DeviceKey,
-    /// The remembered offset in milliseconds.
-    pub offset_ms: i32,
-    /// How it was set.
-    pub origin: DeviceSyncOrigin,
-    /// For a measured value, what it was measured against.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reference: Option<DeviceSyncReference>,
-    /// When it was set, in seconds since the Unix epoch (UTC).
-    pub set_at: u64,
-}
-
 /// `scene.duplicate`'s `sources` (protocol 1.68, ADR-0133 decision 4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DuplicateSources {
     /// The copy places the same sources (references), as before 1.68.
@@ -2644,6 +2289,7 @@ pub enum DuplicateSources {
 
 /// How pasted filters meet the target's own (protocol 1.68, ADR-0133 decision 6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FilterPasteMode {
     /// Replace the target's filters of that kind (default).
@@ -2655,6 +2301,7 @@ pub enum FilterPasteMode {
 
 /// A source and its new item (protocol 1.68).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PlacedCopy {
     /// The copy's id.
     pub source: u32,
@@ -2664,6 +2311,7 @@ pub struct PlacedCopy {
 
 /// An original and its copy (protocol 1.68).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CopiedSource {
     /// The original's id.
     pub from: u32,
@@ -2673,6 +2321,7 @@ pub struct CopiedSource {
 
 /// `source.duplicate`'s answer (protocol 1.68, ADR-0133 decision 3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceDuplicated {
     /// The copy's id.
     pub source: u32,
@@ -2686,6 +2335,7 @@ pub struct SourceDuplicated {
 
 /// `scene.duplicate`'s answer (protocol 1.43; `sources` from 1.68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneDuplicated {
     /// The new scene's id.
     pub scene: u32,
@@ -2696,6 +2346,7 @@ pub struct SceneDuplicated {
 
 /// A group not written for a target, and why (protocol 1.68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SkippedGroup {
     /// The group's id.
     pub group: String,
@@ -2705,6 +2356,7 @@ pub struct SkippedGroup {
 
 /// What `source.reset` or `source.paste_attributes` did to one target (protocol 1.68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AttributeTarget {
     /// The source.
     pub source: u32,
@@ -2721,6 +2373,7 @@ pub struct AttributeTarget {
 
 /// `source.reset`'s and `source.paste_attributes`' answer (protocol 1.68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AttributesApplied {
     /// One entry per target.
     pub targets: Vec<AttributeTarget>,
@@ -2728,6 +2381,7 @@ pub struct AttributesApplied {
 
 /// What the attribute clipboard holds (protocol 1.68, ADR-0133 decision 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AttributesClipboard {
     /// The source copied.
     pub source: u32,
@@ -2742,6 +2396,7 @@ pub struct AttributesClipboard {
 
 /// `text.fonts`' answer (protocol 1.75, ADR-0129 decision 7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextFonts {
     /// The installed font families, sorted, without duplicates.
     pub families: Vec<String>,
@@ -2750,6 +2405,7 @@ pub struct TextFonts {
 /// `text.timer`'s answer (protocol 1.84, ADR-0129 decision 11): the timer as it
 /// stands now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextTimerState {
     /// The text source's id.
     pub source: u32,
@@ -2772,6 +2428,7 @@ pub struct AttributesClipboardChanged {
 /// `addon.list` (protocol 1.90, ADR-0145): every add-on of the built-in catalog, in
 /// catalog order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AddOnList {
     /// The add-ons.
     pub add_ons: Vec<AddOnInfo>,
@@ -2779,6 +2436,7 @@ pub struct AddOnList {
 
 /// One add-on of `addon.list`. Carries no path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AddOnInfo {
     /// Its id (`org.rbs.browser-engine`).
     pub id: String,
@@ -2803,6 +2461,7 @@ pub struct AddOnInfo {
 
 /// Where an add-on is (`addon.list`, `addon.changed`; add-ons spec, "Status").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AddOnStatus {
     /// Not on disk (a version newer than this build's counts as not installed).
@@ -2842,6 +2501,7 @@ pub enum AddOnStatus {
 
 /// Why an add-on install failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AddOnFailReason {
     /// The download failed or stalled.

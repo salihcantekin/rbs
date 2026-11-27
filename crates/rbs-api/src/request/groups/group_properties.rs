@@ -1,6 +1,6 @@
 //! Wire types for the group Properties operations `group.get` and `group.apply` and
 //! the topics `group.changed`, `group.render_state` and `group.scroll_finished`
-//! (protocol 1.108, ADR-0184, ADR-0185).
+//! (protocol 1.111, ADR-0184, ADR-0185).
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -18,6 +18,7 @@ where
 
 /// Group-owned Scroll settings. Unlike item Scroll, these have no `on_return`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GroupScroll {
     /// Units per second, 1 to 4000.
@@ -47,6 +48,7 @@ pub struct GroupScroll {
 
 /// One all-or-none group operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupOperation {
     /// Set or clear every member's timed-show duration.
@@ -127,6 +129,7 @@ impl GroupOperation {
 
 /// `group.apply`: one atomic group edit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApplyGroup {
     /// Scene containing the group.
@@ -147,6 +150,7 @@ pub struct ApplyGroup {
 
 /// `group.get`: a group's state on one canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GetGroup {
     /// Scene containing the group.
@@ -160,6 +164,7 @@ pub struct GetGroup {
 
 /// One group member's persistent and live state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupMemberState {
     /// Item id, not source id.
     pub item: u32,
@@ -179,6 +184,7 @@ pub struct GroupMemberState {
 
 /// A group box in canvas pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupBounds {
     /// Left edge.
     pub x: f32,
@@ -192,6 +198,7 @@ pub struct GroupBounds {
 
 /// Live state of the edited scene's group Scroll run.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupRunState {
     /// Run incarnation, unique for the API server's lifetime.
     pub id: u64,
@@ -203,6 +210,7 @@ pub struct GroupRunState {
 
 /// Which rendered occurrence has failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GroupRenderRole {
     /// Program.
@@ -219,6 +227,7 @@ pub enum GroupRenderRole {
 
 /// Recoverable group-composition failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GroupRenderFailureReason {
     /// Bounds are invalid.
@@ -235,6 +244,7 @@ pub enum GroupRenderFailureReason {
 
 /// Current failure for one rendered occurrence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupRenderFailure {
     /// Opaque occurrence identifier.
     pub occurrence: String,
@@ -246,6 +256,7 @@ pub struct GroupRenderFailure {
 
 /// Complete group state for the selected canvas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupState {
     /// Scene containing the group.
     pub scene: u32,
@@ -273,6 +284,7 @@ pub struct GroupState {
 
 /// A removed `group.changed` key: the group, its scene or its canvas is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GroupRemoved {
     /// Scene that contained the group.
@@ -287,6 +299,7 @@ pub struct GroupRemoved {
 
 /// `group.changed` data: the key's `group.get` answer, or its removal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum GroupChanged {
     /// The group is gone from this key.
@@ -297,6 +310,7 @@ pub enum GroupChanged {
 
 /// `group.render_state` data: the complete current failures of one key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupRenderState {
     /// Scene containing the group.
     pub scene: u32,
@@ -310,6 +324,7 @@ pub struct GroupRenderState {
 
 /// `group.scroll_finished` data: a group `Once` run ended, once per run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupScrollFinished {
     /// The originating scene (a held copy's original).
     pub scene: u32,

@@ -1,0 +1,216 @@
+{
+  "marker.add": {
+    "input_schema": {
+      "$defs": {
+        "MarkerColor": {
+          "description": "A marker colour (protocol 1.50, ADR-0089 decision 2): a fixed, semantic set that\nmirrors the recording manifest's. The app draws each from a theme token.",
+          "oneOf": [
+            {
+              "const": "blue",
+              "description": "The default.",
+              "type": "string"
+            },
+            {
+              "const": "red",
+              "description": "Red.",
+              "type": "string"
+            },
+            {
+              "const": "orange",
+              "description": "Orange.",
+              "type": "string"
+            },
+            {
+              "const": "yellow",
+              "description": "Yellow.",
+              "type": "string"
+            },
+            {
+              "const": "green",
+              "description": "Green.",
+              "type": "string"
+            },
+            {
+              "const": "purple",
+              "description": "Purple.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`marker.add` (protocol 1.50, ADR-0089): a manual marker in the running\nrecordings.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`main`, `vertical` or `all`; absent is `all` (every running recording)."
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarkerColor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent is `blue`."
+        },
+        "label": {
+          "description": "One line of at most 200 characters; absent or blank is \"Marker N\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "MarkerAdd",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MarkerPlaced": {
+          "description": "One marker `marker.add` placed.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The recording's canvas."
+            },
+            "index": {
+              "description": "1-based, in the order the recording's markers were added.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "t_ns": {
+              "description": "Position from the recording's start (`t0`), after the reaction-time offset, in\nnanoseconds. File time: the pauses before it are left out (protocol 1.63).",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "while_paused": {
+              "description": "Added while the recording was paused: the marker sits on that pause's join\n(protocol 1.63, ADR-0124 decision 10). Absent when false.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "canvas",
+            "index",
+            "t_ns"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`marker.add`'s answer: one entry per recording that got the marker.",
+      "properties": {
+        "markers": {
+          "description": "Main canvas first.",
+          "items": {
+            "$ref": "#/$defs/MarkerPlaced"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "markers"
+      ],
+      "title": "MarkersAdded",
+      "type": "object"
+    }
+  },
+  "marker.remove": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`marker.remove` (protocol 1.50, ADR-0089): takes one marker back.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The recording's canvas."
+        },
+        "index": {
+          "description": "The marker's `index` from `marker.add`.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "canvas",
+        "index"
+      ],
+      "title": "MarkerRemove",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

@@ -9,6 +9,7 @@ use crate::types::OutputCanvas;
 
 /// A direction on the canvas, as the user sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
     /// Left to right.
@@ -19,6 +20,7 @@ pub enum Axis {
 
 /// `item.flip` (protocol 1.18, ADR-0084): mirror the item on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FlipItem {
     /// The item's id.
@@ -38,6 +40,7 @@ pub struct FlipItem {
 
 /// `item.rotate` (protocol 1.18, ADR-0084): turn the item clockwise about its centre.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RotateItem {
     /// The item's id.
@@ -57,6 +60,7 @@ pub struct RotateItem {
 
 /// How `item.fit` places the picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FitKind {
     /// The largest box that fits the canvas, aspect kept.
@@ -69,6 +73,7 @@ pub enum FitKind {
 
 /// `item.fit` (protocol 1.18, ADR-0084).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FitItem {
     /// The item's id.
@@ -88,6 +93,7 @@ pub struct FitItem {
 
 /// Which axes `item.align` centres on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AlignAxis {
     /// Both.
@@ -100,6 +106,7 @@ pub enum AlignAxis {
 
 /// `item.align` (protocol 1.18, ADR-0084): centre the item on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AlignItem {
     /// The item's id.
@@ -120,6 +127,7 @@ pub struct AlignItem {
 
 /// `item.reset_transform` (protocol 1.18, ADR-0084).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ResetItemTransform {
     /// The item's id.
@@ -139,6 +147,7 @@ pub struct ResetItemTransform {
 /// its box's centre. The box, flips and crop stay. One undo step, or part of
 /// `gesture`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemRotation {
     /// The item's id.

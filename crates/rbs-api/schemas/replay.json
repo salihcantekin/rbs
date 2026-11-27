@@ -1,0 +1,162 @@
+{
+  "replay.arm": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "replay.disarm": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "replay.save": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`replay.save` (protocol 1.27).",
+      "properties": {
+        "seconds": {
+          "description": "How many seconds back, 1 to the buffer's length; everything it holds when absent.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "title": "ReplaySave",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "replay.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ReplayStatus": {
+          "description": "`replay.status` and `replay.changed` (protocol 1.27, ADR-0088).",
+          "properties": {
+            "armed": {
+              "description": "The buffer runs and keeps the past.",
+              "type": "boolean"
+            },
+            "bytes": {
+              "description": "Payload bytes held.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "held_secs": {
+              "description": "The usable past in whole seconds; `0` while disarmed.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "last_error": {
+              "description": "Why the last save failed, until a save succeeds.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_saved": {
+              "description": "The file of the last clip saved since the server started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length_secs": {
+              "description": "The wanted length in seconds.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "memory_limit": {
+              "description": "The memory limit in bytes.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "memory_limited": {
+              "description": "Memory, not the length setting, is why the past is short.",
+              "type": "boolean"
+            },
+            "saving": {
+              "description": "A clip is being cut or written.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "armed",
+            "held_secs",
+            "length_secs",
+            "bytes",
+            "memory_limit",
+            "memory_limited",
+            "saving"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ReplayStatus",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

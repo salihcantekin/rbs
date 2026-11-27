@@ -571,8 +571,8 @@ mod tests {
 
     #[test]
     fn utc_dates_and_weekdays_are_right() {
-        let t = UNIX_EPOCH + Duration::new(1_795_398_245, 5); // 2026-11-23 01:44:05 UTC, Monday
-        assert_eq!(LocalTime::utc(t), at(2026, 11, 23, 1, 44, 5, 0, 5));
+        let t = UNIX_EPOCH + Duration::new(1_795_398_245, 500); // 2026-11-23 01:44:05 UTC, Monday
+        assert_eq!(LocalTime::utc(t), at(2026, 11, 23, 1, 44, 5, 0, 500));
         assert_eq!(LocalTime::utc(UNIX_EPOCH), at(1970, 1, 1, 0, 0, 0, 3, 0));
         let leap = UNIX_EPOCH + Duration::from_secs(951_782_400); // 2000-02-29
         assert_eq!(
@@ -581,11 +581,11 @@ mod tests {
         );
         assert_eq!(
             until_utc(t, 2 * 3600),
-            Duration::new(16 * 60 - 6, 999_999_995)
+            Duration::new(16 * 60 - 6, 999_999_500)
         );
         assert_eq!(
             until_utc(t, 3600),
-            Duration::new(86_400 - 44 * 60 - 6, 999_999_995)
+            Duration::new(86_400 - 44 * 60 - 6, 999_999_500)
         );
     }
 

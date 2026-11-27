@@ -1,0 +1,427 @@
+{
+  "collection.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "LibraryEntry": {
+          "description": "One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).",
+          "properties": {
+            "id": {
+              "description": "Its stable id, passed to `profile.switch` and `collection.switch`.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name, unique in the library ignoring case.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The output profiles or scene collections (`profile.list`, `collection.list`;\nprotocol 1.4).",
+      "properties": {
+        "current": {
+          "description": "The id of the one in use.",
+          "type": "string"
+        },
+        "entries": {
+          "description": "Every entry, by name.",
+          "items": {
+            "$ref": "#/$defs/LibraryEntry"
+          },
+          "type": "array"
+        },
+        "pending": {
+          "default": false,
+          "description": "A switch asked for through the control API is still being made. Once it is\nfalse, a `current` other than the id asked for means the app refused the\nswitch or could not load the entry (its error line says why).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "current",
+        "pending"
+      ],
+      "title": "Library",
+      "type": "object"
+    }
+  },
+  "collection.set_glide": {
+    "input_schema": {
+      "$defs": {
+        "GlideEasing": {
+          "description": "How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.",
+          "oneOf": [
+            {
+              "const": "linear",
+              "description": "Straight lerp.",
+              "type": "string"
+            },
+            {
+              "const": "ease-in-out",
+              "description": "Smoothstep ease in and out.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`collection.set_glide` (protocol 1.35, ADR-0100): collection morph defaults.",
+      "properties": {
+        "duration_ms": {
+          "description": "Milliseconds in `0..=5000`. `0` jumps.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "easing": {
+          "$ref": "#/$defs/GlideEasing",
+          "description": "Slide easing (`\"linear\"` or `\"ease-in-out\"`)."
+        }
+      },
+      "required": [
+        "duration_ms",
+        "easing"
+      ],
+      "title": "SetCollectionGlide",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "collection.set_stinger_file": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`collection.set_stinger_file` (protocol 1.100, ADR-0140): a new media source for\n`path` that no scene places, made the stinger with the transition set to Stinger.\nOne undo step; answers `source.add`'s `{source}`.",
+      "properties": {
+        "path": {
+          "description": "A local absolute path. A relative path is `invalid_params`; any other path\nneeds the irreversible-actions permission.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "SetStingerFile",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.add`'s answer.",
+      "properties": {
+        "source": {
+          "description": "The new source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SourceAdded",
+      "type": "object"
+    }
+  },
+  "collection.set_transition": {
+    "input_schema": {
+      "$defs": {
+        "FadeTransition": {
+          "additionalProperties": false,
+          "description": "Fade settings (protocol 1.81, ADR-0128).",
+          "properties": {
+            "duration_ms": {
+              "description": "Milliseconds in `0..=5000`; `0` cuts.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "easing": {
+              "$ref": "#/$defs/GlideEasing",
+              "description": "How the blend maps unit time."
+            },
+            "via": {
+              "description": "An opaque colour (`\"#rrggbb\"`) to fade through; absent for a crossfade.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "duration_ms",
+            "easing"
+          ],
+          "type": "object"
+        },
+        "GlideEasing": {
+          "description": "How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.",
+          "oneOf": [
+            {
+              "const": "linear",
+              "description": "Straight lerp.",
+              "type": "string"
+            },
+            {
+              "const": "ease-in-out",
+              "description": "Smoothstep ease in and out.",
+              "type": "string"
+            }
+          ]
+        },
+        "StingerTransition": {
+          "additionalProperties": false,
+          "description": "Stinger settings (protocol 1.89, ADR-0140).",
+          "properties": {
+            "cut_found_ms": {
+              "description": "The cut point found from the file (ADR-0140 decision 3); absent until found.\nRead only: `collection.set_transition` ignores it.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cut_ms": {
+              "description": "The cut point in milliseconds from the start of the source's play range;\nabsent or `null` uses the found point.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source": {
+              "default": null,
+              "description": "The media-file source played over the change; `null` for none (a Stinger change\nthen cuts). It must be placed in no scene.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "SwipeDirection": {
+          "description": "Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Towards the left edge.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Towards the right edge.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Towards the top edge.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Towards the bottom edge.",
+              "type": "string"
+            }
+          ]
+        },
+        "SwipeTransition": {
+          "additionalProperties": false,
+          "description": "Swipe or Slide settings (protocol 1.81, ADR-0128).",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/SwipeDirection",
+              "description": "Which way it moves."
+            },
+            "duration_ms": {
+              "description": "Milliseconds in `0..=5000`; `0` cuts.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "easing": {
+              "$ref": "#/$defs/GlideEasing",
+              "description": "How the motion maps unit time."
+            }
+          },
+          "required": [
+            "duration_ms",
+            "easing",
+            "direction"
+          ],
+          "type": "object"
+        },
+        "TransitionKind": {
+          "description": "What a program-scene change looks like (protocol 1.81, ADR-0128).",
+          "oneOf": [
+            {
+              "const": "cut",
+              "description": "The new scene at once.",
+              "type": "string"
+            },
+            {
+              "const": "fade",
+              "description": "The new scene fades in over the old one.",
+              "type": "string"
+            },
+            {
+              "const": "move",
+              "description": "Shared sources slide to their new boxes, new ones fade in (the collection\nglide, ADR-0100), leaving ones fade out.",
+              "type": "string"
+            },
+            {
+              "const": "swipe",
+              "description": "The new scene slides in over the old one from an edge.",
+              "type": "string"
+            },
+            {
+              "const": "slide",
+              "description": "The new scene pushes the old one out.",
+              "type": "string"
+            },
+            {
+              "const": "stinger",
+              "description": "A media file plays over the change; the scenes switch at its cut point\n(protocol 1.89, ADR-0140). Its duration is the file's play range.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`collection.set_transition` (protocol 1.81, ADR-0128): the collection's transition.\nOnly the given parts change; one undo step.",
+      "properties": {
+        "direct_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransitionKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The kind a program change uses outside studio mode (protocol 1.97, ADR-0153)."
+        },
+        "fade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FadeTransition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fade settings."
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransitionKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The kind a program change uses in studio mode (in every mode before 1.97)."
+        },
+        "slide": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SwipeTransition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Slide settings."
+        },
+        "stinger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StingerTransition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stinger settings, replaced whole (protocol 1.89, ADR-0140 decision 9)."
+        },
+        "swipe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SwipeTransition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Swipe settings."
+        }
+      },
+      "title": "SetCollectionTransition",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer to `collection.set_transition` (protocol 1.89): empty, or a warning about\nthe stinger (ADR-0140 decision 9).",
+      "properties": {
+        "alpha_unsupported": {
+          "description": "The stinger's file has transparency no decoder on this computer keeps, so\neach Stinger change runs as a Cut; absent when false.",
+          "type": "boolean"
+        }
+      },
+      "title": "TransitionSet",
+      "type": "object"
+    }
+  },
+  "collection.switch": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`profile.switch` and `collection.switch` (protocol 1.4).",
+      "properties": {
+        "id": {
+          "description": "The entry's id (`profile.list`, `collection.list`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "EntryRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

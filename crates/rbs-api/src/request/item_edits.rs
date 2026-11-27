@@ -5,13 +5,29 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{LayerDirection, is_main, is_zero_u64};
+use super::{is_main, is_zero_u64};
 use crate::types::OutputCanvas;
+
+/// Which way `item.move` or `scene.move` steps in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum LayerDirection {
+    /// Over the next source with a picture (or one place up in the scene list).
+    Up,
+    /// Under the next source with a picture (or one place down in the scene list).
+    Down,
+    /// To the top of the picture layers (or the start of the scene list). Protocol 1.36.
+    Front,
+    /// To the bottom of the picture layers (or the end of the scene list). Protocol 1.36.
+    Back,
+}
 
 /// `item.move` (protocol 1.32; `front` / `back` since 1.36; `to_item` since 1.100):
 /// layer order among sources with a picture. Exactly one of `direction` and
 /// `to_item` is given, else `invalid_params`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MoveItem {
     /// The item's id.
@@ -29,6 +45,7 @@ pub struct MoveItem {
 /// `scene.move` (protocol 1.33; `to_scene` since 1.100): the canvas's scene list.
 /// Exactly one of `direction` and `to_scene` is given, else `invalid_params`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MoveScene {
     /// The scene's id.
@@ -45,6 +62,7 @@ pub struct MoveScene {
 /// `item.fit_text_box` (protocol 1.100): a text source's box fitted to its text.
 /// Every item that places the source keeps its centre and its scale. One undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FitTextBox {
     /// An item of the text source.
@@ -58,6 +76,7 @@ pub struct FitTextBox {
 /// fill is the source's setting, shared by every scene that places it. Turning it off
 /// adds a border to this item's style on `canvas` when it has none. One undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemFilled {
     /// An item of the colour source.
@@ -71,6 +90,7 @@ pub struct SetItemFilled {
 
 /// A part of a video source's picture, shown as large as fits the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ShownRegion {
     /// The whole picture, fitted like a new source.
@@ -86,6 +106,7 @@ pub enum ShownRegion {
 /// `item.set_shown_region` (protocol 1.100, ADR-0058 Show buttons): the item's crop
 /// and box show `region`. One undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemShownRegion {
     /// The item's id.
@@ -101,6 +122,7 @@ pub struct SetItemShownRegion {
 /// `path` that no scene places, made the stinger with the transition set to Stinger.
 /// One undo step; answers `source.add`'s `{source}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetStingerFile {
     /// A local absolute path. A relative path is `invalid_params`; any other path
@@ -111,6 +133,7 @@ pub struct SetStingerFile {
 /// A shape for `source.add` kind `color` (protocol 1.100): its box and radius are
 /// those of the window's Add source › Shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Stamp {
     /// A circle.
@@ -132,6 +155,7 @@ pub enum Stamp {
 /// `canvas.rehearse` (protocol 1.100, ADR-0135 decision 11): the transition a
 /// `canvas.transition` would run now, played on the Preview picture only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Rehearse {
     /// `"main"` (the default); the vertical canvas has no Preview picture.
@@ -141,6 +165,7 @@ pub struct Rehearse {
 
 /// `item.set_visible` (protocol 1.6; `gesture` since 1.105).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemVisible {
     /// The item's id (`source.list`).
@@ -156,6 +181,7 @@ pub struct SetItemVisible {
 
 /// `item.set_locked` (protocol 1.6; `gesture` since 1.105).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemLocked {
     /// The item's id (`source.list`).
@@ -169,6 +195,7 @@ pub struct SetItemLocked {
 
 /// `item.remove` (protocol 1.10, ADR-0065): Remove from scene; `gesture` since 1.105.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ItemRef {
     /// The item's id.

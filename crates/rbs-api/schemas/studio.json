@@ -1,0 +1,222 @@
+{
+  "studio.get": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "Canvas": {
+          "description": "The canvas's size and frame rate.",
+          "properties": {
+            "fps_den": {
+              "description": "Frame rate denominator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps_num": {
+              "description": "Frame rate numerator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fps_num",
+            "fps_den"
+          ],
+          "type": "object"
+        },
+        "EncoderInfo": {
+          "description": "A video encoder the user can pick, with what its quality settings can be.",
+          "properties": {
+            "b_frames_max": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "h264_profiles": {
+              "description": "H.264 profile names.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "Its adapter id.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "rate_controls": {
+              "description": "`cbr`, `cbr_padded`, `vbr`, `constant_quality`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "rate_controls",
+            "h264_profiles",
+            "b_frames_max"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        },
+        "StudioInfo": {
+          "description": "The studio: canvas, what can be added, encoders, whether recording is possible.",
+          "properties": {
+            "cannot_record": {
+              "description": "Why this system cannot record, or `null` when it can.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/Canvas",
+              "description": "The canvas."
+            },
+            "encoders": {
+              "description": "Video encoders, best first.",
+              "items": {
+                "$ref": "#/$defs/EncoderInfo"
+              },
+              "type": "array"
+            },
+            "kinds": {
+              "description": "Kinds of source the adapters can add.",
+              "items": {
+                "$ref": "#/$defs/SourceKind"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "canvas",
+            "kinds",
+            "encoders",
+            "cannot_record"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/StudioInfo",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

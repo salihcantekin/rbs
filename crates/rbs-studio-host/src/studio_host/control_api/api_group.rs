@@ -1,5 +1,5 @@
 //! Control API answers for `group.*` (protocol 1.104, ADR-0182 decision 10; routed by
-//! `ApiTarget::run`), and `group.get` and `group.apply` (protocol 1.108, ADR-0184,
+//! `ApiTarget::run`), and `group.get` and `group.apply` (protocol 1.111, ADR-0184,
 //! ADR-0193).
 
 use super::*;

@@ -112,7 +112,7 @@ and refuses regrouping. The binder marks the drawn members of a group with group
 Scroll on a bound compositor (`BoundLayer::group`: window, scaled Scroll, or the
 `SpanRefusal` that draws it transparent, also in `BindProblem::GroupSpanRefused`)
 under `SceneBinder::with_span_limits`; the studio composes them (gpu-compositor
-spec); the host edits them through `group.get` and `group.apply` (protocol 1.109).
+spec); the host edits them through `group.get` and `group.apply` (protocol 1.111).
 A `Group`
 adds an optional saved Scroll per `CanvasId`, with no default layout and no
 inheritance between canvases. Its settings use the Scroll fields and validation

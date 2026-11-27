@@ -1,4 +1,4 @@
-//! The group topics of protocol 1.108 (ADR-0184, ADR-0185, ADR-0193 decision 5):
+//! The group topics of protocol 1.111 (ADR-0184, ADR-0185, ADR-0193 decision 5):
 //! `group.changed`, `group.render_state` and `group.scroll_finished`, published by
 //! [`Host::publish`] on the control thread after each change. A key's object id is
 //! issued by the host while the key lives; the payload names its scene, group and

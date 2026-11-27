@@ -1,0 +1,313 @@
+{
+  "sync.apply_to_device_sources": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`sync.apply_to_device_sources` (protocol 1.66).",
+      "properties": {
+        "source": {
+          "description": "The source whose offset the other sources of its device get.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SyncApplyToDeviceSources",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`sync.apply_to_device_sources`'s answer (protocol 1.66).",
+      "properties": {
+        "changed": {
+          "description": "The sources that changed.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "changed"
+      ],
+      "title": "SyncAppliedToDeviceSources",
+      "type": "object"
+    }
+  },
+  "sync.devices": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "DeviceKey": {
+          "additionalProperties": false,
+          "description": "An audio device whose offset is remembered (protocol 1.66, ADR-0126 decision 7):\nthe source type and its `adapter` and `target` settings.",
+          "properties": {
+            "adapter": {
+              "description": "Adapter id.",
+              "type": "string"
+            },
+            "target": {
+              "description": "The adapter's device id.",
+              "type": "string"
+            },
+            "type": {
+              "description": "Source type id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "adapter",
+            "target"
+          ],
+          "type": "object"
+        },
+        "DeviceSyncEntry": {
+          "description": "One entry of `sync.devices` (protocol 1.66).",
+          "properties": {
+            "key": {
+              "$ref": "#/$defs/DeviceKey",
+              "description": "The device."
+            },
+            "offset_ms": {
+              "description": "The remembered offset in milliseconds.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "origin": {
+              "$ref": "#/$defs/DeviceSyncOrigin",
+              "description": "How it was set."
+            },
+            "reference": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DeviceSyncReference"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For a measured value, what it was measured against."
+            },
+            "set_at": {
+              "description": "When it was set, in seconds since the Unix epoch (UTC).",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "key",
+            "offset_ms",
+            "origin",
+            "set_at"
+          ],
+          "type": "object"
+        },
+        "DeviceSyncOrigin": {
+          "description": "How a remembered offset was set (protocol 1.66). A client reads an unknown value\nas `other`.",
+          "oneOf": [
+            {
+              "const": "measured",
+              "description": "Applied from a measurement.",
+              "type": "string"
+            },
+            {
+              "const": "manual",
+              "description": "Set by hand or through `source.set_sync_offset` without a measurement.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A value this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "DeviceSyncReference": {
+          "description": "What a measured offset was measured against (protocol 1.66).",
+          "properties": {
+            "key": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DeviceKey"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The reference's device, when it has one."
+            },
+            "name": {
+              "description": "The reference's name when measured.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`sync.devices`'s answer (protocol 1.66).",
+      "properties": {
+        "devices": {
+          "description": "One entry per remembered device.",
+          "items": {
+            "$ref": "#/$defs/DeviceSyncEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "title": "SyncDeviceList",
+      "type": "object"
+    }
+  },
+  "sync.forget_device": {
+    "input_schema": {
+      "$defs": {
+        "DeviceKey": {
+          "additionalProperties": false,
+          "description": "An audio device whose offset is remembered (protocol 1.66, ADR-0126 decision 7):\nthe source type and its `adapter` and `target` settings.",
+          "properties": {
+            "adapter": {
+              "description": "Adapter id.",
+              "type": "string"
+            },
+            "target": {
+              "description": "The adapter's device id.",
+              "type": "string"
+            },
+            "type": {
+              "description": "Source type id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "adapter",
+            "target"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`sync.forget_device` (protocol 1.66).",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/DeviceKey",
+          "description": "The device, as `sync.devices` lists it."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "SyncForgetDevice",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "sync.measure_cancel": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`sync.measure_cancel` (protocol 1.66).",
+      "properties": {
+        "measurement": {
+          "description": "The id `sync.measure_start` answered.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "measurement"
+      ],
+      "title": "SyncMeasureCancel",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "sync.measure_start": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`sync.measure_start` (protocol 1.66, ADR-0126 decision 10).",
+      "properties": {
+        "reference": {
+          "description": "The picture source to clap in view of; absent: the camera of a camera\nmicrophone, else the only camera in the program scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The audio source to measure.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "SyncMeasureStart",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`sync.measure_start`'s answer (protocol 1.66).",
+      "properties": {
+        "measurement": {
+          "description": "The measurement's id, as `sync.measure.changed` names it.",
+          "type": "string"
+        },
+        "reference": {
+          "description": "The reference picture source used.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "measurement",
+        "reference"
+      ],
+      "title": "SyncMeasureStarted",
+      "type": "object"
+    }
+  }
+}

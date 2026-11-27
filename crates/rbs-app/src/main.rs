@@ -53,6 +53,7 @@ mod studio_start;
 mod studio_ui;
 mod swap_setting;
 mod title_bar;
+mod ui_commands;
 mod vcam_page;
 mod view;
 mod window_place;
@@ -1339,12 +1340,6 @@ impl App {
             o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
             o.set_picker_open(true);
         });
-    }
-
-    fn close_picker_ui(&mut self) {
-        self.studio.close_add_picker();
-        self.with_picker_overlays(|o| o.set_picker_open(false));
-        self.picker_host = None;
     }
 
     fn undo(&mut self) {
@@ -3580,7 +3575,7 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
         g.on_picker_chosen(move |index| {
             entry::guard(|| {
                 ctx.update(move |app: &mut App| {
-                    if usize::try_from(index).is_ok_and(|i| app.studio.choose_add_picker(i)) {
+                    if ui_commands::chosen(app, index) {
                         app.close_picker_ui();
                     }
                 });
