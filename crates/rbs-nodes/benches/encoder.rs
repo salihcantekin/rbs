@@ -2,7 +2,8 @@
 //! the node's own work is what is measured: a new frame each tick into an encoder that
 //! makes one packet, passed to a counting output. `plain` is the default node;
 //! `keyframe_requests` reads a pending-free keyframe request each frame (ADR-0124
-//! decision 7). Compare `plain` on main and on the change, and the two variants.
+//! decision 7); `bitrate_changes` also reads an empty bitrate target (ADR-0139
+//! decision 8). Compare `plain` on main and on the change, and the three variants.
 //!
 //! Run: `cargo bench -p rbs-nodes --bench encoder`.
 
@@ -22,18 +23,25 @@ use support::{
     encoder_config,
 };
 
-fn rig(keyframes: bool) -> Rig {
+#[derive(Clone, Copy)]
+enum Variant {
+    Plain,
+    Keyframes,
+    Bitrate,
+}
+
+fn rig(variant: Variant) -> Rig {
     let mut rig = Rig::new();
     let encoder = VideoEncoderNode::open(
         Arc::new(FakeEncoderFactory(Arc::new(EncoderState::default()))),
         encoder_config(),
     )
     .unwrap();
-    let encoder = if keyframes {
-        // Nothing is requested: the node holds its own reference to the request.
-        encoder.with_keyframe_requests().0
-    } else {
-        encoder
+    // Nothing is requested: the node holds its own reference to each handle.
+    let encoder = match variant {
+        Variant::Plain => encoder,
+        Variant::Keyframes => encoder.with_keyframe_requests().0,
+        Variant::Bitrate => encoder.with_bitrate_changes().0,
     };
     let stream = encoder.stream().clone();
     let output = OutputNode::new(
@@ -55,8 +63,12 @@ fn rig(keyframes: bool) -> Rig {
 
 fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("encoder_tick");
-    for (name, keyframes) in [("plain", false), ("keyframe_requests", true)] {
-        let mut r = rig(keyframes);
+    for (name, variant) in [
+        ("plain", Variant::Plain),
+        ("keyframe_requests", Variant::Keyframes),
+        ("bitrate_changes", Variant::Bitrate),
+    ] {
+        let mut r = rig(variant);
         group.bench_function(name, |b| {
             b.iter(|| {
                 r.tick();

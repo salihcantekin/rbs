@@ -371,7 +371,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 ## Open questions
 
 - Encoders with deep look-ahead or B-frames flush more packets than one final tick on a cadence partition can pass (`PER_TICK_EVENTS`); the rest is counted in `flush_lost`. Today's hardware adapters hold at most their few slots (ADR-0043). More final ticks while a node has output pending would close this.
-- Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
+- Transport feedback (`KeyframeRequested`, `BitrateHint`) reaches the encoder directly through `EncoderFeedback` for an output that owns its encoder (ADR-0139 phase 1a, [output ports](output-ports.md) "Feedback"); no studio output builds it yet (the guest share will).
 - Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
 - Native export is built for Metal (IOSurface, VideoToolbox) and D3D12 buffers (NVENC through CUDA). A D3D12 texture exporter for AMF and QSV, and Vulkan, follow ([ADR-0147](../adr/0147-native-encoder-input.md) order of work, [#83](https://github.com/salihcantekin/rbs/issues/83)).
 - YUY2 and I420 system frames (common on webcams) are not uploaded yet; a camera that offers only those fails `prepare` with `FormatUnsupported` ([#85](https://github.com/salihcantekin/rbs/issues/85)).

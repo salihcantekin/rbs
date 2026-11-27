@@ -13,6 +13,8 @@ use rbs_core::time::Timestamp;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
+use crate::feedback::{BitrateTarget, with_bitrate};
+
 /// Node type id of the video encoder.
 pub const VIDEO_ENCODER_NODE_TYPE: &str = "org.rbs.video-encoder";
 /// Index of the "video" input pin.
@@ -61,6 +63,12 @@ pub struct EncoderNodeStats {
     pub keyframes_requested: AtomicU64,
     /// Requests through [`KeyframeAt`] the session refused; the stream goes on.
     pub keyframes_refused: AtomicU64,
+    /// Bitrate changes through [`BitrateTarget`] the session applied (ADR-0139 decision 8).
+    pub bitrate_changes: AtomicU64,
+    /// Bitrate changes the session refused; it keeps its bitrate.
+    pub bitrate_refused: AtomicU64,
+    /// The bitrate in use after the last applied change, bits per second; 0 before one.
+    pub bitrate_bps: AtomicU64,
 }
 
 /// A request from the control thread for a keyframe at the first frame whose time is at
@@ -131,6 +139,10 @@ pub struct VideoEncoderNode {
     /// Keyframe requests from the control thread; `None` when the adapter does not
     /// declare `codec.reconfigure: keyframe`, so nothing is read per frame.
     keyframe_at: Option<Arc<KeyframeAt>>,
+    /// Bitrate changes from the output's limiter (ADR-0139 decision 8). Read only when
+    /// `keyframe_at` is set too ([`Self::with_bitrate_changes`] sets both), so a plain
+    /// node does no more work per frame than before.
+    bitrate: Option<Arc<BitrateTarget>>,
     stats: Arc<EncoderNodeStats>,
     /// Frames the probed session said it keeps after `submit` (ADR-0147 decision 4).
     frames_held: usize,
@@ -170,6 +182,7 @@ impl VideoEncoderNode {
             resync: false,
             ended: false,
             keyframe_at: None,
+            bitrate: None,
             stats: Arc::default(),
             frames_held,
             native,
@@ -191,6 +204,21 @@ impl VideoEncoderNode {
     pub fn with_keyframe_requests(mut self) -> (Self, Arc<KeyframeAt>) {
         let handle = Arc::new(KeyframeAt::default());
         self.keyframe_at = Some(Arc::clone(&handle));
+        (self, handle)
+    }
+
+    /// Lets the output that owns this encoder change its bitrate through the returned
+    /// handle (ADR-0139 decision 8, ADR-0090 decision 5). Call it only for an adapter
+    /// that lists `bitrate` in `codec.reconfigure` and an encoder no other output
+    /// shares (ADR-0047 decision 6), with a rate control that has a bitrate. The node
+    /// then reads the target once per new frame, with its keyframe request; it also
+    /// takes keyframe requests (an unused handle when none was asked for).
+    pub fn with_bitrate_changes(mut self) -> (Self, Arc<BitrateTarget>) {
+        if self.keyframe_at.is_none() {
+            self.keyframe_at = Some(Arc::new(KeyframeAt::default()));
+        }
+        let handle = Arc::new(BitrateTarget::default());
+        self.bitrate = Some(Arc::clone(&handle));
         (self, handle)
     }
 
@@ -219,10 +247,13 @@ impl VideoEncoderNode {
     /// Submits `frame`, draining once and retrying when the session is busy.
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), NodeError> {
         let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
-        let due = self
-            .keyframe_at
-            .as_ref()
-            .is_some_and(|k| k.take_due(frame.timestamp().as_nanos()));
+        let mut due = false;
+        if let Some(k) = self.keyframe_at.as_ref() {
+            due = k.take_due(frame.timestamp().as_nanos());
+            if let Some(bps) = self.bitrate.as_ref().and_then(|b| b.take()) {
+                apply_bitrate(session.as_mut(), &self.config, bps, &self.stats);
+            }
+        }
         if due {
             // Before the frame, so this frame is the keyframe. A refusal leaves the
             // stream valid; the caller sees it in the counter.
@@ -308,6 +339,24 @@ impl VideoEncoderNode {
         if self.share_packets.load(Ordering::Acquire) {
             packet.attach_packet_share();
         }
+    }
+}
+
+/// Applies a new bitrate before the next frame. A refusal (or a rate control without
+/// a bitrate) leaves the session at its bitrate; the counters show it.
+fn apply_bitrate(
+    session: &mut dyn VideoEncoder,
+    config: &VideoEncoderConfig,
+    bps: u64,
+    stats: &EncoderNodeStats,
+) {
+    let applied = with_bitrate(config.rate_control, bps)
+        .is_some_and(|rate| session.reconfigure(&EncoderChange::Bitrate(rate)).is_ok());
+    if applied {
+        add(&stats.bitrate_changes, 1);
+        stats.bitrate_bps.store(bps, Ordering::Relaxed);
+    } else {
+        add(&stats.bitrate_refused, 1);
     }
 }
 

@@ -145,6 +145,8 @@ pub struct EncoderState {
     pub forced: Mutex<Vec<u64>>,
     /// While set, `reconfigure` refuses (`Unsupported`).
     pub refuse_reconfigure: AtomicBool,
+    /// Rate controls applied through `EncoderChange::Bitrate`, in order.
+    pub bitrates: Mutex<Vec<RateControl>>,
 }
 
 pub struct FakeEncoderFactory(pub Arc<EncoderState>);
@@ -237,9 +239,13 @@ impl VideoEncoder for FakeEncoder {
         if self.state.refuse_reconfigure.load(Ordering::Relaxed) {
             return Err(EncodeError::Unsupported);
         }
-        if matches!(change, EncoderChange::RequestKeyframe) {
-            self.state.keyframe_requests.fetch_add(1, Ordering::Relaxed);
-            self.force_next = true;
+        match change {
+            EncoderChange::RequestKeyframe => {
+                self.state.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+                self.force_next = true;
+            }
+            EncoderChange::Bitrate(rate) => self.state.bitrates.lock().unwrap().push(*rate),
+            _ => {}
         }
         Ok(())
     }
