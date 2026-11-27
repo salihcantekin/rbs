@@ -109,9 +109,7 @@ struct Look {
 fn shot(file: &TokenFile, base: Base, effects: Effects, look: &Look, dir: &std::path::Path) {
     let mut body = ThemeBody::new(base);
     body.set_effects(effects);
-    let theme = file
-        .resolve(&body)
-        .expect("the theme resolves");
+    let theme = file.resolve(&body).expect("the theme resolves");
     let s = slot(&theme, "").expect("a slot");
     let w = PropertiesProbe::new().expect("the probe window");
     apply_tokens(
@@ -179,22 +177,22 @@ fn properties_redesign_screenshots() {
         (Effects::Tactile, "tactile"),
     ];
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
-      for (effects, e) in fx {
-        for (n, text, tab, open, width, height) in looks {
-            if e != "calm" && n != "text-tall" {
-                continue;
+        for (effects, e) in fx {
+            for (n, text, tab, open, width, height) in looks {
+                if e != "calm" && n != "text-tall" {
+                    continue;
+                }
+                let name = format!("{n}-{b}-{e}");
+                let look = Look {
+                    name: Box::leak(name.into_boxed_str()),
+                    text,
+                    tab,
+                    options_open: open,
+                    width,
+                    height,
+                };
+                shot(&file, base, effects, &look, &dir);
             }
-            let name = format!("{n}-{b}-{e}");
-            let look = Look {
-                name: Box::leak(name.into_boxed_str()),
-                text,
-                tab,
-                options_open: open,
-                width,
-                height,
-            };
-            shot(&file, base, effects, &look, &dir);
         }
-      }
     }
 }
