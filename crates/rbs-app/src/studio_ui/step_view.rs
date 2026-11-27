@@ -16,7 +16,8 @@ use rbs_app::edit_history::{EditKind, StepInfo};
 /// collection's transition, 29 Preview edits dropped when studio mode ended (ADR-0151;
 /// the scene's name), 30 the scroll (ADR-0150), 31 grouped, 32 ungrouped, 33 group
 /// renamed (ADR-0182; the group's name), 34 scene made active or inactive (ADR-0195; the
-/// scene's name).
+/// scene's name), 35 bus added, 36 bus removed, 37 bus renamed (ADR-0170 decision 9;
+/// the bus's name, or the old one).
 pub(super) fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -56,6 +57,9 @@ pub(super) fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Ungroup => 32,
                 EditKind::RenameGroup => 33,
                 EditKind::SceneActive => 34,
+                EditKind::AddBus => 35,
+                EditKind::RemoveBus => 36,
+                EditKind::RenameBus => 37,
             },
             s.name.as_str(),
         ),

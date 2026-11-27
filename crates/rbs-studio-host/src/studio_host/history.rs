@@ -109,8 +109,14 @@ impl Host {
                 if self.recorded_text_boxes_in(&collection) != self.recorded_text_boxes() {
                     return Err((false, STOP_TO_CHANGE_BOX.to_owned()));
                 }
+                // A bus in use is never removed, and output settings follow a rename
+                // (ADR-0170 decision 9).
+                let renames = self
+                    .bus_step_check(&collection)
+                    .map_err(|why| (false, why))?;
                 self.collection = collection;
                 self.edits.history = history;
+                self.bus_step_done(&renames);
                 Ok(())
             }
             Err(HistoryError::Empty) => Err((

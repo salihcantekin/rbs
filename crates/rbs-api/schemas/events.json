@@ -66,6 +66,11 @@
               "type": "string"
             },
             {
+              "const": "bus.changed",
+              "description": "The main canvas's audio buses (state, protocol 1.115).",
+              "type": "string"
+            },
+            {
               "const": "protection.changed",
               "description": "Recording protection: disks, lag, memory and alerts (state, protocol 1.49,\nADR-0090).",
               "type": "string"
@@ -232,6 +237,11 @@
             {
               "const": "monitor.changed",
               "description": "The monitor output: device, volume, solo, whether it plays (state, protocol\n1.30).",
+              "type": "string"
+            },
+            {
+              "const": "bus.changed",
+              "description": "The main canvas's audio buses (state, protocol 1.115).",
               "type": "string"
             },
             {

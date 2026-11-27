@@ -24,6 +24,7 @@ mod add_source;
 mod added;
 mod arrange;
 mod browser;
+mod buses;
 mod canvas;
 mod groups;
 mod item_cues;
@@ -42,6 +43,7 @@ pub use add_source::AddSource;
 pub use added::*;
 pub use arrange::*;
 pub use browser::*;
+pub use buses::*;
 pub use canvas::*;
 pub use groups::*;
 pub use item_cues::*;
@@ -742,24 +744,6 @@ pub struct SetVerticalSize {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
-}
-
-/// `canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct SetMasterVolume {
-    /// A linear factor from 0 to 1.
-    pub volume: f32,
-}
-
-/// `canvas.set_master_muted` (protocol 1.15, ADR-0081).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct SetMasterMuted {
-    /// Muted.
-    pub muted: bool,
 }
 
 /// `source.set_monitor` (protocol 1.30, ADR-0097).
@@ -1551,6 +1535,8 @@ pub enum Command {
     CanvasSetMasterVolume(SetMasterVolume),
     /// `canvas.set_master_muted` (protocol 1.15, ADR-0081).
     CanvasSetMasterMuted(SetMasterMuted),
+    /// The bus methods and `source.set_sends` (protocol 1.115, ADR-0097).
+    Bus(BusCommand),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
     /// `filter.types` (protocol 1.8; the `domain` parameter since 1.16, ADR-0082).
@@ -2246,6 +2232,8 @@ pub enum Response {
     GroupCreated(GroupCreated),
     /// `group.list` (protocol 1.104).
     Groups(GroupList),
+    /// `bus.list` (protocol 1.115).
+    Buses(BusList),
     /// `group.get` (protocol 1.111).
     Group(GroupState),
     /// `item.add` (protocol 1.6).

@@ -94,6 +94,7 @@ const SHARDS: &[(&str, &str)] = &[
     ("addon", include_str!("../schemas/addon.json")),
     ("api", include_str!("../schemas/api.json")),
     ("browser", include_str!("../schemas/browser.json")),
+    ("bus", include_str!("../schemas/bus.json")),
     ("calibration", include_str!("../schemas/calibration.json")),
     ("canvas", include_str!("../schemas/canvas.json")),
     ("collection", include_str!("../schemas/collection.json")),
@@ -857,6 +858,26 @@ fn group_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
         (
             "group.list".into(),
             pair::<SceneRef, GroupList>(WireRequest::GroupList)?,
+        ),
+        (
+            "bus.list".into(),
+            pair::<Empty, BusList>(WireRequest::BusList)?,
+        ),
+        (
+            "bus.add".into(),
+            pair::<AddBus, Empty>(WireRequest::BusAdd)?,
+        ),
+        (
+            "bus.remove".into(),
+            pair::<BusName, Empty>(WireRequest::BusRemove)?,
+        ),
+        (
+            "bus.set".into(),
+            pair::<SetBus, Empty>(WireRequest::BusSet)?,
+        ),
+        (
+            "source.set_sends".into(),
+            pair::<SetSourceSends, Empty>(WireRequest::SourceSetSends)?,
         ),
         (
             "group.get".into(),

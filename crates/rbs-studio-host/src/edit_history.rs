@@ -95,6 +95,12 @@ pub enum EditKind {
     Ungroup,
     /// A group was renamed (ADR-0182; the name is the old one).
     RenameGroup,
+    /// A bus was added to the main canvas (ADR-0170 decision 9; the name is the bus's).
+    AddBus,
+    /// A bus was removed with its sends (ADR-0170 decision 9).
+    RemoveBus,
+    /// A bus was renamed (ADR-0170 decision 9; the name is the old one).
+    RenameBus,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

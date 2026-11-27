@@ -3,6 +3,7 @@
 use super::*;
 
 mod api_add;
+mod api_bus;
 mod api_canvas;
 mod api_collection;
 mod api_group;
@@ -191,6 +192,7 @@ impl ApiTarget<'_> {
             | C::CanvasAutoLayout(..)
             | C::CanvasSetVerticalSize(..)
             | C::CanvasRemoveVertical(..) => self.answer_source(command),
+            C::Bus(b) => self.answer_bus(b),
             C::CanvasSetMasterVolume(..)
             | C::CanvasSetMasterMuted(..)
             | C::FilterTypes(..)

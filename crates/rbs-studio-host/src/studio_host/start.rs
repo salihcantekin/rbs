@@ -111,6 +111,7 @@ pub(super) fn start(
         sizes: BTreeMap::new(),
         attribute_clipboard: None,
         edits: history::EditHistory::new(),
+        bus_events: buses::BusEvents::default(),
         waiting: false,
         texts: text_live::TextState::new(saved.text_timers),
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],

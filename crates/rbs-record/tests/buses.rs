@@ -140,6 +140,9 @@ fn a_recording_writes_one_named_track_per_bus_on_the_same_packet_grid() {
     assert!(!report.audio_shared);
     let buses: Vec<&str> = report.tracks.iter().map(|t| t.bus.as_str()).collect();
     assert_eq!(buses, ["main", "Music"]);
+    // The host keeps a bus a running output reads (ADR-0097 decision 12).
+    assert!(studio.output_reads_bus(id, "Music"));
+    assert!(!studio.output_reads_bus(id, "Nope"));
     let streams = r.log.streams.lock().unwrap().clone();
     let named: Vec<(Option<&str>, bool)> = streams
         .iter()

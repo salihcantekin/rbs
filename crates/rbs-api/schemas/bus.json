@@ -1,0 +1,148 @@
+{
+  "bus.add": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`bus.add`: a new bus, silent until a source sends to it. One undo step.",
+      "properties": {
+        "name": {
+          "description": "Its name: not empty, not `main`, not taken.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AddBus",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "bus.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "BusRow": {
+          "description": "One bus of [`BusList`].",
+          "properties": {
+            "muted": {
+              "description": "Muted.",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "Its name, unique on the canvas, never `main`.",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Its fader, a linear factor from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "name",
+            "volume",
+            "muted"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`bus.list` and topic `bus.changed`: the main canvas's buses other than `main`, in\nthe order they were added.",
+      "properties": {
+        "buses": {
+          "description": "The buses.",
+          "items": {
+            "$ref": "#/$defs/BusRow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "buses"
+      ],
+      "title": "BusList",
+      "type": "object"
+    }
+  },
+  "bus.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`bus.remove`: the bus, its filters and the sends to it, in one undo step; refused\nwhile the loaded output profile or a running output uses it.",
+      "properties": {
+        "name": {
+          "description": "The bus.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "BusName",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "bus.set": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`bus.set`: at least one of `rename`, `volume`, `muted`; all or none. A rename is\none undo step and renames the loaded output profile's references; the fader and\nmute are live.",
+      "properties": {
+        "muted": {
+          "description": "Muted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The bus.",
+          "type": "string"
+        },
+        "rename": {
+          "description": "Its new name, under the rules of `bus.add`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume": {
+          "description": "Its fader, a linear factor from 0 to 1.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SetBus",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

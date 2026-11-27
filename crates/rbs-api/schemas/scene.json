@@ -1586,6 +1586,26 @@
             }
           ]
         },
+        "SendLevel": {
+          "additionalProperties": false,
+          "description": "One send level: in `source.set_sends`, and in source rows for the levels that\ndiffer from the default (1 to `main`, 0 to every other bus).",
+          "properties": {
+            "bus": {
+              "description": "The bus, by name; `main` is the master mix.",
+              "type": "string"
+            },
+            "level": {
+              "description": "A linear factor from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "bus",
+            "level"
+          ],
+          "type": "object"
+        },
         "ShapeKind": {
           "description": "The outline of a picture inside its box (ADR-0053).",
           "oneOf": [
@@ -1812,6 +1832,13 @@
                 }
               ],
               "description": "Which feeds are marked, and the picture's form (protocol 1.52, ADR-0117);\nabsent when none is."
+            },
+            "sends": {
+              "description": "Send levels that differ from the default, 1 to `main` and 0 to other buses\n(protocol 1.115, ADR-0097); absent when every level is the default.",
+              "items": {
+                "$ref": "#/$defs/SendLevel"
+              },
+              "type": "array"
             },
             "status": {
               "$ref": "#/$defs/SourceStatus",

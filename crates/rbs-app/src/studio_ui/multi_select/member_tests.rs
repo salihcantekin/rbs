@@ -32,6 +32,7 @@ fn row(id: u32, group: Option<u32>, x: f32) -> SourceRow {
         locked: false,
         audio: Default::default(),
         heard: None,
+        sends: Vec::new(),
         filters: Vec::new(),
         global: false,
         also_in: Vec::new(),

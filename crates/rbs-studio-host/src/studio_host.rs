@@ -119,6 +119,7 @@ pub use updates::*;
 mod canvas;
 pub use canvas::AUDIO_REST_AFTER;
 mod arrange;
+mod buses;
 mod command;
 mod command_path;
 mod control_loop;
@@ -575,6 +576,8 @@ struct Host {
     attribute_clipboard: Option<attributes::AttributeSnapshot>,
     /// The undo history and the steps the window shows.
     edits: history::EditHistory,
+    /// The `bus.changed` state last published and the profiles a bus rename changed.
+    bus_events: buses::BusEvents,
     waiting: bool,
     /// Live text: timers, elapsed clocks, crisp re-renders and fonts asked for.
     texts: text_live::TextState,
@@ -1010,6 +1013,7 @@ impl Host {
         }
         self.publish_cues(notify);
         self.publish_groups();
+        self.publish_buses(notify);
         let picture = self.studio.scene_preview();
         if picture != self.scene_preview_sent {
             self.scene_preview_sent = picture.clone();
@@ -1222,6 +1226,7 @@ impl Host {
                         .program_levels(self.canvas)
                         .and_then(|l| l.level(s.id))
                         .map(|l| l.over(s.audio)),
+                    sends: self.row_sends(s.id),
                     filters: filters::rows(
                         s,
                         |f| self.studio.audio_filter_meter(f).cloned(),

@@ -359,6 +359,14 @@ pub(super) fn api_source(row: &SourceRow) -> api::SourceInfo {
             video_as: api_picture_form(row.record_separately.video_as),
         }),
         filters: row.filters.iter().map(filters::api_row).collect(),
+        sends: row
+            .sends
+            .iter()
+            .map(|(bus, level)| rbs_api::request::SendLevel {
+                bus: bus.clone(),
+                level: *level,
+            })
+            .collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),
         heard: row.heard.map(|h| api::Heard {
