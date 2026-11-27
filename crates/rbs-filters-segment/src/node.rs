@@ -498,12 +498,13 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // file or waits for a worker (spec rule 2, P6) and the first matte follows the
         // first picture within a few ticks. `release` closes it, so a disabled filter
         // holds no model and no worker (P13).
+        // Taken first, so a failed prepare and the restart after it never find an old
+        // turn-on (ADR-0199 decision 1).
+        let turned_on = self.turned_on.swap(false, Ordering::AcqRel);
         let opening = std::time::Instant::now();
         self.open_session()?;
         report::ready(opening.elapsed());
-        // Taken here, before the swap, so a later join (a scene switch, a restart after
-        // a fault) never finds an old turn-on.
-        self.start.allowed = self.turned_on.swap(false, Ordering::AcqRel);
+        self.start.allowed = turned_on;
         let readback = Readback::start(Setup {
             device: device.clone(),
             slots: slots.clone(),
@@ -600,6 +601,9 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let plain = frame.filter(|_| keep_plain).and_then(VideoFrame::share);
         let Some((input_id, size, decode, time)) = input else {
             self.drawn = None;
+            // No picture on the first tick: the source was not on screen (still opening,
+            // failing), so its picture is never kept later (ADR-0199 decision 1).
+            self.start.allowed &= self.start.joined != Some(tick_time);
             self.start.plain_shown = false;
             drop(outputs.set_video(OUT_PIN, None)?);
             return Ok(());

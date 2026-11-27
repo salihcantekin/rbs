@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use common::{assert_close, at};
+
+#[path = "node/hold.rs"]
+mod hold;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{
     ColorSpace, FramePayload, PixelFormat, Size, VideoFormat, VideoFrame, next_generation,

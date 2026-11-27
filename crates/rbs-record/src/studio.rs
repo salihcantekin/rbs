@@ -2970,8 +2970,7 @@ impl Studio {
             &self.browser_background,
         ));
         self.drive_background_pages();
-        self.mark_turned_on(report.as_ref());
-        let applied = self.send_raw(None, false);
+        let applied = self.send_marked(report.as_ref());
         if applied.is_ok()
             && let Some(report) = report.as_mut()
         {

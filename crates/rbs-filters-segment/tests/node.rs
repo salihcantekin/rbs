@@ -318,3 +318,29 @@ fn a_size_change_before_the_first_matte_ends_the_plain_picture() {
         "a size change never shows the plain input"
     );
 }
+
+#[test]
+fn a_turn_on_whose_first_tick_has_no_picture_shows_nothing_until_the_first_matte() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.log.hold.store(true, Ordering::Relaxed);
+    // The source has not delivered a picture yet: the room was not on screen.
+    rig.tick();
+    rig.tick();
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    rig.tick();
+    assert!(lock(&rig.last).is_none(), "the plain picture must not show");
+}
+
+#[test]
+fn a_failed_open_takes_the_turned_on_flag() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    assert!(rig.until_output());
+    rig.disable();
+    rig.log.fail_open.store(true, Ordering::Relaxed);
+    rig.enable(true);
+    // A retry after the back-off must not find the old edge.
+    assert!(!rig.turned_on.load(Ordering::Acquire));
+}

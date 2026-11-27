@@ -145,6 +145,16 @@ impl<T> ParamReceiver<T> {
     /// parked waiting for it; that is one non-blocking system call, and only when the
     /// two sides met on the lock.
     pub fn update(&mut self) -> bool {
+        self.update_when(|_, _| true)
+    }
+
+    /// [`ParamReceiver::update`], taking the newest value only when `accept(current,
+    /// next)` says so; a value not accepted stays waiting for a later call, and a newer
+    /// send replaces it as usual. `accept` runs only when a value is waiting, under the
+    /// exchange's lock, so it must be short and must not allocate (ADR-0199).
+    ///
+    /// Real time: as `update`. With nothing new it is one atomic load.
+    pub fn update_when(&mut self, accept: impl FnOnce(&T, &T) -> bool) -> bool {
         if !self.shared.fresh_ready.load(Ordering::Acquire) {
             return false;
         }
@@ -155,6 +165,10 @@ impl<T> ParamReceiver<T> {
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
             Err(TryLockError::WouldBlock) => return false,
         };
+        match x.fresh.as_ref() {
+            Some(next) if accept(&self.current, next) => {}
+            _ => return false,
+        }
         let Some(mut next) = x.fresh.take() else {
             return false;
         };
@@ -214,6 +228,27 @@ mod tests {
         drop(held);
         assert!(rx.update());
         assert_eq!(rx.get()[0], 1);
+    }
+
+    #[test]
+    fn a_value_not_accepted_waits_and_a_newer_send_replaces_it() {
+        let (mut tx, mut rx) = channel(0_u32);
+        let _ = tx.send(1);
+        assert!(
+            !rx.update_when(|_, next| *next > 1),
+            "not accepted: kept waiting"
+        );
+        assert_eq!(*rx.get(), 0);
+        assert!(tx.pending());
+        let info = allocation_counter::measure(|| {
+            assert!(!rx.update_when(|current, next| *current == 0 && *next > 1));
+        });
+        assert_eq!(info.count_total, 0);
+        assert_eq!(tx.send(2), Some(1), "the waiting value is the one replaced");
+        assert!(rx.update_when(|current, next| *current == 0 && *next == 2));
+        assert_eq!(*rx.get(), 2);
+        assert!(!tx.pending());
+        assert_eq!(tx.recycle(), Some(0));
     }
 
     #[test]

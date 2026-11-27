@@ -362,6 +362,48 @@ fn link_of(inputs: &Inputs<'_>, layer: &NodeLayer) -> Option<usize> {
     }
 }
 
+/// The longest a compositor keeps drawing its list while a new one waits for a
+/// producer the schedule has not linked yet (ADR-0199 decision 5).
+const HOLD_LIMIT: Duration = Duration::from_secs(1);
+
+/// Takes the newest layer list once the schedule that links it runs (ADR-0199 decision
+/// 6). The list is sent before its apply, and a joining node is prepared before the
+/// swap, so for a while the new list names a producer that is not linked yet: drawn,
+/// its layer would vanish. Until then the current list is drawn. A producer that was
+/// unlinked in the current list too (a source that failed) does not hold a list, and
+/// no list waits longer than [`HOLD_LIMIT`]. Runs only when a list is waiting; no
+/// allocation.
+fn take_list(
+    layers: &mut ParamReceiver<LayerList>,
+    held: &mut Option<Timestamp>,
+    inputs: &Inputs<'_>,
+    capacity: u32,
+    now: Timestamp,
+) -> bool {
+    let taken = layers.update_when(|current, next| {
+        let since = *held.get_or_insert(now);
+        now.saturating_since(since) >= HOLD_LIMIT || linked(inputs, current, next, capacity)
+    });
+    if taken {
+        *held = None;
+    }
+    taken
+}
+
+/// True when every layer of `next` has its link, or had none in `current` either.
+#[inline(never)]
+fn linked(inputs: &Inputs<'_>, current: &LayerList, next: &LayerList, capacity: u32) -> bool {
+    let n = capacity as usize;
+    next.layers.iter().take(n).all(|spec| {
+        link_of(inputs, spec).is_some()
+            || current
+                .layers
+                .iter()
+                .take(n)
+                .any(|c| c.producer == spec.producer)
+    })
+}
+
 /// Whether a compositor reports when it drew every layer (ADR-0128 decision 7). A type
 /// parameter, so a compositor without a counter compiles the bookkeeping away and does
 /// no more work per tick than before (P13).
@@ -519,6 +561,8 @@ pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     drawn_at: Timestamp,
     /// Scroll records, when the node was built [`CompositorNode::with_scroll`].
     scroll: Option<ParamReceiver<Option<ScrollBinding>>>,
+    /// Tick time since which a new list waits for its links ([`take_list`]).
+    held: Option<Timestamp>,
     stats: Arc<CompositorStats>,
     redraw: std::marker::PhantomData<D>,
 }
@@ -544,6 +588,7 @@ impl CompositorNode {
             drawn_valid: false,
             drawn_at: Timestamp::ZERO,
             scroll: None,
+            held: None,
             stats: Arc::default(),
             redraw: std::marker::PhantomData,
         };
@@ -594,6 +639,7 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
             drawn_valid: false,
             drawn_at: Timestamp::ZERO,
             scroll: self.scroll,
+            held: None,
             stats: self.stats,
             redraw: std::marker::PhantomData,
         }
@@ -729,6 +775,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             self.key = Vec::with_capacity(self.capacity as usize);
         }
         self.drawn_valid = false;
+        self.held = None;
         Ok(())
     }
 
@@ -745,7 +792,14 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let listed = self.layers.update();
+        let (now, inputs) = (ctx.tick().time, ctx.inputs());
+        let listed = take_list(
+            &mut self.layers,
+            &mut self.held,
+            &inputs,
+            self.capacity,
+            now,
+        );
         // One emptiness check per tick: a list without group spans takes the path it
         // always had (ADR-0193 decision 2).
         if !self.layers.get().spans.is_empty() {

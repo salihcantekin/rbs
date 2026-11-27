@@ -61,6 +61,8 @@ pub trait FilterType: Send + Sync + 'static {
 }
 
 /// A filter type's own node, with the value channel and statistics the studio keeps.
+/// Built with [`CustomNode::new`], so fields can be added later.
+#[non_exhaustive]
 pub struct CustomNode {
     /// The node, ready to be adopted on the render partition.
     pub node: Box<dyn Node<GpuRuntime>>,
@@ -72,6 +74,29 @@ pub struct CustomNode {
     /// source was on screen (`BindReport::turned_on_filters`); the node takes it when it
     /// joins the schedule. `None`: the type does not care (ADR-0199).
     pub turned_on: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl CustomNode {
+    /// A node with its value channel and statistics, without a turned-on flag.
+    pub fn new(
+        node: Box<dyn Node<GpuRuntime>>,
+        values: ParamSender<Values>,
+        stats: Arc<crate::FilterStats>,
+    ) -> Self {
+        Self {
+            node,
+            values,
+            stats,
+            turned_on: None,
+        }
+    }
+
+    /// With the flag the host sets on a turn-on edge (ADR-0199).
+    #[must_use]
+    pub fn with_turned_on(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.turned_on = Some(flag);
+        self
+    }
 }
 
 /// A catalogue entry used where an owned type is wanted: `Arc::new(entry)`.

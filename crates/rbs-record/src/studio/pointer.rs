@@ -92,18 +92,26 @@ pub(super) fn video_filter(
 }
 
 impl Studio {
-    /// Sets the turned-on flag of each video filter the bind reported turned on while
-    /// its source was on screen, before the apply that schedules it (ADR-0199).
-    pub(super) fn mark_turned_on(&self, report: Option<&BindReport>) {
-        let Some(report) = report else { return };
+    /// [`Studio::send_raw`] of the studio's graph with the turned-on flag set on each
+    /// video filter the bind reported turned on while its source was on screen
+    /// (ADR-0199). Every flag is cleared after the apply, taken or not: a node that was
+    /// not prepared in it must not find the flag at a later join.
+    pub(super) fn send_marked(
+        &mut self,
+        report: Option<&BindReport>,
+    ) -> Result<rbs_engine::Applied, rbs_engine::EngineError> {
+        let turned_on =
+            |node| report.is_some_and(|r| r.turned_on_filters.iter().any(|&(_, n)| n == node));
+        self.set_turned_on(turned_on);
+        let applied = self.send_raw(None, false);
+        self.set_turned_on(|_| false);
+        applied
+    }
+
+    fn set_turned_on(&self, on: impl Fn(rbs_graph::description::NodeId) -> bool) {
         for entry in &self.filters {
-            if let Some(FilterInstance::Video(_, _, Some(flag))) = &entry.instance
-                && report
-                    .turned_on_filters
-                    .iter()
-                    .any(|&(_, n)| n == entry.node)
-            {
-                flag.store(true, Ordering::Release);
+            if let Some(FilterInstance::Video(_, _, Some(flag))) = &entry.instance {
+                flag.store(on(entry.node), Ordering::Release);
             }
         }
     }

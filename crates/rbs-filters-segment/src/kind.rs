@@ -132,12 +132,8 @@ impl FilterType for BackgroundRemoval {
             },
         );
         let (node, values, _) = BackgroundRemovalNode::new(factory, small, values);
-        let turned_on = Some(node.turned_on());
-        Some(CustomNode {
-            node: Box::new(node),
-            values,
-            stats: Arc::new(rbs_filters::FilterStats::default()),
-            turned_on,
-        })
+        let turned_on = node.turned_on();
+        let stats = Arc::new(rbs_filters::FilterStats::default());
+        Some(CustomNode::new(Box::new(node), values, stats).with_turned_on(turned_on))
     }
 }
