@@ -64,6 +64,17 @@
 		<p class="hint">Choose "only" to put the two jobs (start and stop, show and hide, mute and unmute, pause and resume) on separate keys.</p>
 	</div>
 
+	<div class="section">Key text</div>
+	<sdpi-item label="Text">
+		<sdpi-textfield setting="label0" placeholder="Default"></sdpi-textfield>
+	</sdpi-item>
+	<div id="label1" hidden>
+		<sdpi-item label="Text when on">
+			<sdpi-textfield setting="label1" placeholder="Default"></sdpi-textfield>
+		</sdpi-item>
+	</div>
+	<p class="hint">Write the key's text here, once for each state, and leave the Stream Deck Title empty. Stream Deck draws its own Title in every state, so the text above is the only way to give each state its own words.</p>
+
 	<div class="section">RBS connection</div>
 	<sdpi-item label="Port">
 		<sdpi-textfield setting="port" global placeholder="4456" pattern="[0-9]*"></sdpi-textfield>
@@ -100,6 +111,7 @@
 				"source-visible": ["Show and hide", "Show only", "Hide only"],
 				mute: ["Mute and unmute", "Mute only", "Unmute only"],
 			}[kind];
+			if (["scene","record","record-pause","stream","source-visible","mute","vcam","studio"].includes(kind)) document.getElementById("label1").removeAttribute("hidden");
 			if (modes) {
 				const sel = document.getElementById("mode-select");
 				["toggle", "on", "off"].forEach((v, i) => {

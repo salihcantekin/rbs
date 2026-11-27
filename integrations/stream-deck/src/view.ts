@@ -7,7 +7,7 @@ export interface SceneSettings { scene?: string; sceneName?: string; color?: str
 export interface SourceSettings { source?: string; sourceName?: string }
 /** What a press does on a two-state key: both ways, only the first (start, show, mute, pause), or only the second. */
 export type Mode = "toggle" | "on" | "off";
-export interface ModeSettings { mode?: Mode }
+export interface ModeSettings { mode?: Mode; label0?: string; label1?: string }
 export type Settings = SceneSettings & SourceSettings & ModeSettings;
 export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "studio" | "transition" | "stream" | "source-visible" | "mute";
 
@@ -103,7 +103,10 @@ const LARGE = new Set<string>([glyphs.recordIdle, live(glyphs.recordIdle), glyph
 
 /** The look of one key, with its icon size class. */
 export function look(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
-	const k = lookRaw(kind, settings, state, ctx);
+	const raw = lookRaw(kind, settings, state, ctx);
+	// The user's own text for this state replaces ours (Stream Deck would draw its Title in every state).
+	const own = (stateIndex(kind, settings, state) === 1 ? settings.label1 : settings.label0)?.trim();
+	const k = own && !ctx.titled ? { ...raw, label: own } : raw;
 	return k.size ? k : { ...k, size: LARGE.has(k.glyph) ? "large" : k.glyph === glyphs.warn ? "small" : "medium" };
 }
 
