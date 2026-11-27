@@ -6,7 +6,7 @@ import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
 import { positionOf, volumeAt, volumeText } from "../src/fader.js";
 import { press, turnVolume } from "../src/press.js";
-import { type Elapsed, dialView, formatElapsed, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
+import { type Elapsed, dialView, formatElapsed, jobDone, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
 
 const ready = { state: "ready" } as const;
@@ -81,6 +81,33 @@ describe("renderKey", () => {
 		expect(look("record", { mode: "on" }, state, c).label).toBe("Recording");
 		expect(look("record", { mode: "off" }, { ...state, record: { state: "idle" } }, c)).toMatchObject({ label: "Stop", tone: "dim" });
 		expect(look("record-pause", { mode: "off" }, state, c).tone).toBe("dim");
+	});
+	it("own texts: one per state when toggling, one for a one-job key, which goes dim when done", () => {
+		const c = { elapsed: noElapsed, liveSince: 0, now: 0, titled: false };
+		const idle = { ...state, record: { state: "idle" as const } };
+		const own = { label0: "Start Rec", label1: "Stop" };
+		expect(look("record", own, idle, c).label).toBe("Start Rec");
+		expect(look("record", own, state, c).label).toBe("Stop");
+		expect(look("record", { ...own, mode: "on" }, idle, c)).toMatchObject({ label: "Start Rec", tone: "neutral" });
+		expect(look("record", { ...own, mode: "on" }, state, c)).toMatchObject({ label: "Start Rec", tone: "dim", ring: false, pulse: false });
+		expect(look("record", { ...own, mode: "off" }, state, c)).toMatchObject({ label: "Start Rec", tone: "live" });
+		expect(look("record", { ...own, mode: "off" }, idle, c).tone).toBe("dim");
+		expect(look("record", own, state, { ...c, titled: true }).label).toBe("Stop");
+	});
+	it("every one-job key is passive exactly when its job is done", () => {
+		const idle = { ...state, record: { state: "idle" as const }, stream: { state: "idle" as const } };
+		expect(jobDone("record", {}, state, "on")).toBe(true);
+		expect(jobDone("record", {}, idle, "on")).toBe(false);
+		expect(jobDone("stream", {}, state, "on")).toBe(true);
+		expect(jobDone("stream", {}, idle, "off")).toBe(true);
+		expect(jobDone("record-pause", {}, { ...state, record: { state: "recording", paused: true } }, "on")).toBe(true);
+		expect(jobDone("record-pause", {}, state, "off")).toBe(true);
+		expect(jobDone("source-visible", { source: "7" }, state, "off")).toBe(true); // hidden
+		expect(jobDone("mute", { source: "7" }, state, "on")).toBe(true);
+		expect(jobDone("mute", { source: "7" }, state, "off")).toBe(false);
+		expect(jobDone("vcam", {}, state, "on")).toBe(false);
+		expect(jobDone("studio", {}, state, "off")).toBe(true);
+		expect(jobDone("marker", {}, state, "on")).toBe(false);
 	});
 	it("shows the link state instead of RBS state when not ready", () => {
 		expect(svg("scene", { scene: "1" }, state, { state: "unreachable" })).toContain(">connected<");

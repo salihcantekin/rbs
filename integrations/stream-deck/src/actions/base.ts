@@ -128,6 +128,13 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 		// A title the user hid with "Show title" off is not drawn by Stream Deck, so it does not count.
 		m.set(ev.payload.state ?? 0, Boolean(ev.payload.title) && ev.payload.titleParameters?.showTitle !== false);
 		titles.set(ev.action.id, m);
+		// Keep a title the user typed in Stream Deck as this key's own text, so it is not lost when they clear it.
+		const k = known.get(ev.action.id);
+		const typed = ev.payload.title?.trim();
+		if (k && typed && ev.payload.titleParameters?.showTitle !== false && !k.settings.label0?.trim()) {
+			k.settings = { ...k.settings, label0: typed };
+			void ev.action.setSettings(k.settings as JsonObject);
+		}
 		shown.delete(ev.action.id);
 		repaintAll();
 	}

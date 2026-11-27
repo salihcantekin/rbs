@@ -103,11 +103,34 @@ const LARGE = new Set<string>([glyphs.recordIdle, live(glyphs.recordIdle), glyph
 
 /** The look of one key, with its icon size class. */
 export function look(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
-	const raw = lookRaw(kind, settings, state, ctx);
-	// The user's own text for this state replaces ours (Stream Deck would draw its Title in every state).
-	const own = (stateIndex(kind, settings, state) === 1 ? settings.label1 : settings.label0)?.trim();
-	const k = own && !ctx.titled ? { ...raw, label: own } : raw;
+	let k = lookRaw(kind, settings, state, ctx);
+	const mode = modeOf(settings);
+	// The user's own text replaces ours (Stream Deck would draw its Title in every state). A key with one job
+	// (start only, stop only, ...) has one text; a key that does both jobs has one per state.
+	const own = (mode === "toggle" && stateIndex(kind, settings, state) === 1 ? settings.label1 : settings.label0)?.trim();
+	if (own && !ctx.titled) k = { ...k, label: own };
+	// A one-job key whose job is done is passive: dim, no ring, no pulse.
+	if (mode !== "toggle" && jobDone(kind, settings, state, mode)) k = { ...k, tone: "dim", ring: false, pulse: false, dot: false };
 	return k.size ? k : { ...k, size: LARGE.has(k.glyph) ? "large" : k.glyph === glyphs.warn ? "small" : "medium" };
+}
+
+/** True when a one-job key (mode "on" or "off") has nothing left to do: pressing it would change nothing. */
+export function jobDone(kind: Kind, settings: Settings, state: ViewState, mode: "on" | "off"): boolean {
+	const on = mode === "on";
+	const src = state.sources?.find((x) => String(x.id) === settings.source);
+	switch (kind) {
+		case "record": return (state.record?.state === "recording") === on;
+		case "record-pause": return (state.record?.state === "recording" && state.record.paused === true) === on;
+		case "stream": return (state.stream?.state === "live") === on;
+		case "source-visible": return src?.item !== undefined && (src.visible !== false) === on;
+		case "mute": {
+			const muted = settings.source === "master" ? state.scenes?.master?.muted : src?.muted;
+			return muted !== undefined && (muted === true) === on;
+		}
+		case "vcam": return (state.vcam?.sending === true) === on;
+		case "studio": return (state.scenes?.preview !== undefined) === on;
+		default: return false;
+	}
 }
 
 function lookRaw(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
