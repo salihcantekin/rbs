@@ -201,6 +201,7 @@ pub fn generate_schemas() -> Result<BTreeMap<String, MethodSchemas>, serde_json:
         .chain(media_entries()?)
         .chain(arrange_entries()?)
         .chain(scroll_entries()?)
+        .chain(group_entries()?)
         .chain(extra_entries()?)
         .chain(transition_entries()?)
         .chain(glide_entries()?)
@@ -537,30 +538,6 @@ fn first_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
             pair::<ShowItem, Empty>(WireRequest::ItemShow)?,
         ),
         (
-            "group.create".into(),
-            pair::<CreateGroup, GroupCreated>(WireRequest::GroupCreate)?,
-        ),
-        (
-            "group.remove".into(),
-            pair::<GroupRef, Empty>(WireRequest::GroupRemove)?,
-        ),
-        (
-            "group.rename".into(),
-            pair::<RenameGroup, Empty>(WireRequest::GroupRename)?,
-        ),
-        (
-            "group.list".into(),
-            pair::<SceneRef, GroupList>(WireRequest::GroupList)?,
-        ),
-        (
-            "group.get".into(),
-            pair::<GetGroup, GroupState>(WireRequest::GroupGet)?,
-        ),
-        (
-            "group.apply".into(),
-            pair::<ApplyGroup, Empty>(WireRequest::GroupApply)?,
-        ),
-        (
             "calibration.cancel".into(),
             pair::<Empty, Empty>(WireRequest::CalibrationCancel)?,
         ),
@@ -839,6 +816,36 @@ fn arrange_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> 
         (
             "item.distribute".into(),
             pair::<DistributeItems, Empty>(WireRequest::ItemDistribute)?,
+        ),
+    ])
+}
+
+#[cfg(feature = "schema")]
+fn group_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
+    Ok(vec![
+        (
+            "group.create".into(),
+            pair::<CreateGroup, GroupCreated>(WireRequest::GroupCreate)?,
+        ),
+        (
+            "group.remove".into(),
+            pair::<GroupRef, Empty>(WireRequest::GroupRemove)?,
+        ),
+        (
+            "group.rename".into(),
+            pair::<RenameGroup, Empty>(WireRequest::GroupRename)?,
+        ),
+        (
+            "group.list".into(),
+            pair::<SceneRef, GroupList>(WireRequest::GroupList)?,
+        ),
+        (
+            "group.get".into(),
+            pair::<GetGroup, GroupState>(WireRequest::GroupGet)?,
+        ),
+        (
+            "group.apply".into(),
+            pair::<ApplyGroup, Empty>(WireRequest::GroupApply)?,
         ),
     ])
 }
