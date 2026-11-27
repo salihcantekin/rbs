@@ -613,7 +613,7 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `scene.rename?scene=&name=` | action | `scene.rename {scene, name}` | Scene |
   | `scene.remove?scene=` | action, disabled for the last scene | `scene.remove {scene}` | Scene |
   | `scene.duplicate?scene=` | action | `scene.duplicate {scene}` (protocol 1.43) | Scene |
-  | `scene.audio.own_levels.toggle?scene=` ("Own levels", icon `sliders`) | toggle, checked while the scene keeps its own levels; from a window, turning it off asks first in the scene's row ("Discard own levels of <name>?") | `scene.audio.own {scene}` / `scene.audio.shared {scene}` (protocol 1.48, ADR-0091) | Scene |
+  | `scene.audio.own_levels.toggle?scene=` ("Own levels", icon `sliders`) | toggle, checked while the scene keeps its own levels; from a window, turning it off asks first in a small dialog over the main window ("Stop using own levels in <name>?", a line on what is removed, Keep own levels focused / Use shared levels), then an undo toast ("<name> uses shared levels", Undo) shows while that step is the newest | `scene.audio.own {scene}` / `scene.audio.shared {scene}` (protocol 1.48, ADR-0091) | Scene |
   | `scene.audio.reset_source?scene=&source=` ("Use the source's level", icon `reset`) | action, only while the program scene has its own level for the source | `scene.audio.reset_source {scene, source}` (protocol 1.48) | Scene (Mixer strip menu only) |
   | `item.visible.toggle?item=`, `item.locked.toggle?item=` | toggle, checked while shown or locked | `item.set_visible {item, visible}`, `item.set_locked {item, locked}` (protocol 1.6) | Source |
   | `source.muted.toggle?source=` | toggle, checked while muted | `source.set_muted {source, muted}` | Source |

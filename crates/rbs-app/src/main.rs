@@ -48,6 +48,7 @@ mod quit;
 mod replay_page;
 mod reveal;
 mod section_keys;
+mod shared_levels;
 mod shortcuts_page;
 mod single;
 mod source_list_calls;
@@ -902,7 +903,7 @@ impl App {
                 self.changed();
             }
             Run::LoudnessShown(on) => self.studio.set_loudness_shown(on),
-            // Discarding a scene's levels asks in its row first; a control surface
+            // Discarding a scene's levels asks in a dialog first; a control surface
             // (`confirm` false) does it at once, as the control API does.
             Run::SceneOwnLevels(id, false) if confirm => self.ask_shared_levels(id),
             Run::SceneOwnLevels(id, own) => self.studio.set_scene_own_levels(id, own),
@@ -1006,6 +1007,7 @@ impl App {
     fn open_name_prompt(&mut self, ask: Ask) {
         use menu_bar::{EntryKind, EntryOp};
         let (title, confirm, value, field) = match ask {
+            Ask::SharedLevels(id) => return self.ask_shared_levels(id),
             Ask::Workspace | Ask::Track(_) => (
                 "Save as new workspace".to_owned(),
                 "Save",
@@ -1038,6 +1040,8 @@ impl App {
         o.set_name_title(title.into());
         o.set_name_confirm(confirm.into());
         o.set_name_ask(field);
+        o.set_name_detail("".into());
+        o.set_name_cancel("".into());
         o.set_name_open(true);
         self.name_for = Some(ask);
     }
@@ -1074,22 +1078,11 @@ impl App {
     /// Shows the scene row's confirm before Remove scene from a menu or a shortcut.
     /// The Scenes panel opens so the row is there.
     fn ask_remove_scene(&mut self, id: i32) {
-        self.ask_scene(id, 0);
-    }
-
-    /// Asks in the scene's row before its own levels are discarded (ADR-0091).
-    fn ask_shared_levels(&mut self, id: i32) {
-        self.ask_scene(id, 1);
-    }
-
-    /// Shows the scene's row with its confirm: `kind` 0 remove, 1 discard own levels.
-    fn ask_scene(&mut self, id: i32, kind: i32) {
         if let Some(p) = panel("rbs.scenes") {
             self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
             self.raise_host_of(&p);
         }
         let ask = |g: Studio<'_>| {
-            g.set_confirm_scene_kind(kind);
             g.set_confirming_scene(id);
             g.set_confirm_scene_asked(g.get_confirm_scene_asked() + 1);
         };
@@ -3428,6 +3421,10 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
                 let done = match app.name_for {
                     Some(Ask::Entry(kind, op)) => app.entry_command(kind, op, &name),
                     Some(Ask::Track(t)) => app.track_named(t, &name).map(|()| None),
+                    Some(Ask::SharedLevels(id)) => {
+                        app.studio.use_shared_levels(id);
+                        Ok(None)
+                    }
                     _ => app.save_workspace_as(&name).map(|()| None),
                 };
                 match done {
@@ -3809,6 +3806,8 @@ enum Ask {
     Entry(menu_bar::EntryKind, menu_bar::EntryOp),
     /// A new track's name (`None`) or track `i`'s new name (ADR-0170 decision 9).
     Track(Option<usize>),
+    /// Scene `id` goes back to Shared levels (ADR-0091): a confirmation, no field.
+    SharedLevels(i32),
 }
 
 /// The Library's "Choose a PNG file". The dialog is asynchronous (ADR-0055).
@@ -4737,8 +4736,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_scene_active, |app, scene: i32, active: bool| {
         app.studio.set_scene_active(scene, active);
     });
-    on!(on_use_shared_levels, |app, scene: i32| {
-        app.studio.set_scene_own_levels(scene, false);
+    on!(on_shared_levels_toast, |app, undo: bool| {
+        app.studio.shared_levels_toast(undo);
     });
     on!(
         on_set_source_record_separately,

@@ -14,7 +14,7 @@ use ai::unix_now;
 use rbs_api::types::{OutputKind, OutputTarget};
 use rbs_app::ai_tools::{Forward as AiForward, Tool};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
-use rbs_app::edit_history::{EditKind, StepInfo};
+use rbs_app::edit_history::StepInfo;
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::permission_text;
@@ -86,6 +86,7 @@ pub(crate) mod destinations;
 mod external_commands;
 pub(crate) mod filters;
 mod item_calls;
+mod levels_undo;
 mod mixer_audio;
 mod step_view;
 use step_view::step_view;
@@ -489,7 +490,8 @@ pub struct StudioUi {
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
-    pub deleted_serial: u64,
+    /// The undo toasts' countdowns and the Shared levels toast.
+    levels_undo: levels_undo::LevelsUndo,
     /// Settings › Global sources (ADR-0065): the kind picked (an index into
     /// [`Self::kind_codes`], -1 none), its devices and the collection's sources of that
     /// kind that are not global, in the Source field's order.
@@ -828,8 +830,8 @@ impl StudioUi {
             vertical_preview_failed: false,
             vertical_picture_failed: false,
             deleted: String::new(),
-            deleted_serial: 0,
             deleted_from_scene: false,
+            levels_undo: Default::default(),
             global_kind: -1,
             global_targets: Vec::new(),
             global_existing: Vec::new(),
@@ -1208,9 +1210,7 @@ impl StudioUi {
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
         g.set_preview_state(preview_state);
-        g.set_deleted(self.deleted.as_str().into());
-        g.set_deleted_from_scene(self.deleted_from_scene);
-        g.set_deleted_generation(self.deleted_serial as i32);
+        self.push_undo_toasts(g);
         g.set_rec_markers(self.rec_markers as i32);
         g.set_rec_pausable(
             self.rec_state == rec_state::RECORDING || self.vertical_rec == VerticalOut::On,
@@ -2354,6 +2354,7 @@ impl StudioUi {
 
     /// Turns a scene's Own levels on or puts it back in Shared levels (ADR-0091).
     pub fn set_scene_own_levels(&mut self, scene: i32, own: bool) {
+        self.shared_levels_toast(false);
         self.send(Command::SetSceneOwnLevels {
             scene: SceneId::from_raw(scene as u32),
             own,
@@ -6036,25 +6037,13 @@ impl StudioUi {
             Update::Deleted { name, from_scene } => {
                 self.deleted = name;
                 self.deleted_from_scene = from_scene;
-                self.deleted_serial += 1;
+                self.levels_undo.serial += 1;
             }
             Update::Error(e) => {
                 self.adding = false;
                 out.error = Some(e);
             }
-            Update::History { undo, redo } => {
-                // The toast undoes only the delete it names: once another edit (also
-                // one from a control API client) or an undo changed what is newest,
-                // it goes.
-                let still = undo
-                    .as_ref()
-                    .is_some_and(|s| s.kind == EditKind::Delete && s.name == self.deleted);
-                if !still {
-                    self.deleted.clear();
-                }
-                self.next_undo = undo;
-                self.next_redo = redo;
-            }
+            Update::History { undo, redo } => self.history(undo, redo),
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Markers { counts, placed } => self.markers(counts, placed),
             Update::RecordPause(states) => self.record_pause(states),

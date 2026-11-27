@@ -572,10 +572,14 @@ export global Overlays {
     in-out property <string> name-error;
     // The dialog's title and the label of its accepting button; `name-ask` false makes
     // it a confirmation (Delete / Keep, Keep focused) with `name-error` as its message
-    // line and no field.
+    // line and no field. `name-detail` is a plain line under the title (what a
+    // confirmation changes) and `name-cancel` names the cancelling button; empty: the
+    // defaults (Cancel, or Keep for a confirmation).
     in-out property <string> name-title: @tr("Save as new workspace");
     in-out property <string> name-confirm: @tr("Save");
     in-out property <bool> name-ask: true;
+    in-out property <string> name-detail;
+    in-out property <string> name-cancel;
     in-out property <OverlayCover> name-cover;
     callback name-accepted(string);
     callback name-cancelled();
@@ -1631,6 +1635,10 @@ export global Studio {
     in property <bool> deleted-from-scene;
     // Bumps on each delete, so the toast's countdown starts again.
     in property <int> deleted-generation;
+    // The scene just put back in Shared levels from the confirm dialog (ADR-0091): an
+    // undo toast shows while it is set; the generation bumps for each new one.
+    in property <string> levels-undo;
+    in property <int> levels-undo-generation;
     // Something goes out (a recording or a stream): edits to what is on air show at once.
     out property <bool> on-air: self.rec-state != 0 || self.st-state != 0;
     // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
@@ -1848,8 +1856,9 @@ export global Studio {
     // Removes the program scene's own level for a source (ADR-0091 reset_source): the
     // source's own level is heard again in that scene.
     callback reset-scene-level(int /* source */);
-    // Puts a scene back in Shared levels after the row's confirm (ADR-0091).
-    callback use-shared-levels(int /* scene */);
+    // The Shared levels toast's answer (ADR-0091): `undo` brings the scene's own levels
+    // back; false: dismissed or timed out.
+    callback shared-levels-toast(bool /* undo */);
     // The Scenes filter (ADR-0195): list the inactive scenes. Kept per collection.
     in property <bool> show-inactive-scenes: true;
     in property <bool> show-hidden-sources: true;
@@ -2067,8 +2076,6 @@ export global Studio {
     // from this scene; 2 deletes it from every scene.
     in-out property <int> confirming-scene: -1;
     in-out property <int> confirm-scene-asked;
-    // What the scene row asks: 0 remove the scene, 1 discard its own levels (ADR-0091).
-    in-out property <int> confirm-scene-kind: 0;
     in-out property <int> confirming-source: -1;
     in-out property <int> confirm-source-kind: 0;
     in-out property <int> confirm-source-asked;

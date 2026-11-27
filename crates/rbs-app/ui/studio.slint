@@ -499,11 +499,8 @@ component SceneRowView inherits Rectangle {
     property <bool> marked: studio ? data.preview : data.live;
     property <int> confirm-asked: Studio.confirm-scene-asked;
     changed confirm-asked => { root.take-scene-confirm(); }
-    // What the row's confirm asks: 0 remove the scene, 1 discard its own levels.
-    property <int> confirm-kind;
     function take-scene-confirm() {
         if Studio.confirming-scene == data.id {
-            root.confirm-kind = Studio.confirm-scene-kind;
             row.confirm = true;
             Studio.confirming-scene = -1;
         }
@@ -554,8 +551,8 @@ component SceneRowView inherits Rectangle {
             ? @tr("Return puts it in preview, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu")
             : @tr("Return puts it on air, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu");
         edit-label: @tr("Name of the scene {}", data.name);
-        confirm-question: root.confirm-kind == 1 ? @tr("Discard own levels of {}?", data.name) : @tr("Remove {}?", data.name);
-        confirm-name: root.confirm-kind == 1 ? @tr("Use shared levels in {}", data.name) : @tr("Remove scene {}", data.name);
+        confirm-question: @tr("Remove {}?", data.name);
+        confirm-name: @tr("Remove scene {}", data.name);
         allow-drag: true;
         drag-data: Studio.scene-data(data.id);
         drop-enabled: Studio.dragging-scene >= 0;
@@ -564,15 +561,10 @@ component SceneRowView inherits Rectangle {
         double-clicked => { self.editing = true; }
         menu-asked(at) => { menu.open(at); }
         renamed(t) => { Studio.rename-scene(data.id, t); }
-        delete-asked => { if root.can-remove { root.confirm-kind = 0; self.confirm = true; } }
+        delete-asked => { if root.can-remove { self.confirm = true; } }
         confirmed => {
-            if root.confirm-kind == 1 {
-                self.confirm = false;
-                Studio.use-shared-levels(data.id);
-            } else {
-                root.leaving();
-                Studio.remove-scene(data.id);
-            }
+            root.leaving();
+            Studio.remove-scene(data.id);
         }
         dragging(on) => { Studio.dragging-scene = on ? data.id : -1; }
         can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-scene >= 0 && Studio.dragging-scene != data.id; }
@@ -651,7 +643,7 @@ component SceneRowView inherits Rectangle {
                     visible: (row.hovered || row.editing) && root.can-remove;
                     icon: IconName.close;
                     name: @tr("Remove scene {}", data.name);
-                    clicked => { row.focus-pointer(); root.confirm-kind = 0; row.confirm = true; }
+                    clicked => { row.focus-pointer(); row.confirm = true; }
                 }
             }
     }

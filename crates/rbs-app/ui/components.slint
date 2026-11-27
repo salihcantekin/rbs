@@ -4877,6 +4877,13 @@ export component OverlayHost inherits Rectangle {
                     font-weight: Tokens.type-title-weight;
                     accessible-role: none;
                 }
+                if Overlays.name-detail != "": Text {
+                    text: Overlays.name-detail;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
                 Rectangle {
                     visible: Overlays.name-ask;
                     border-width: Tokens.size-border;
@@ -4911,7 +4918,7 @@ export component OverlayHost inherits Rectangle {
                     accessible-role: text;
                 }
                 name-actions := DialogActions {
-                    cancel-text: Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
+                    cancel-text: Overlays.name-cancel != "" ? Overlays.name-cancel : Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
                     confirm-text: Overlays.name-confirm;
                     confirm-enabled: !Overlays.name-ask || name-input.text != "";
                     cancelled => { Overlays.name-cancelled(); }
