@@ -112,6 +112,7 @@ export component SourceOptions inherits Rectangle {
                     alignment: center;
                     IconButton {
                         icon: root.closed ? IconName.chevron-up : IconName.chevron-down;
+                        framed: true;
                         name: root.closed ? @tr("Show source options") : @tr("Hide source options");
                         accessible-expanded: !root.closed;
                         clicked => { Sections.set-closed("properties.options", !root.closed); }
@@ -129,6 +130,7 @@ export component SourceOptions inherits Rectangle {
                 padding-right: max(0px, Tokens.size-panel-pad - Tokens.size-scrollbar-hit);
                 padding-bottom: Tokens.size-panel-pad;
                 alignment: start;
+                spacing: Tokens.size-field-gap;
                 // Global sources (ADR-0065): on, the source is shown and heard in every scene.
                 OptionRow {
                     label: @tr("Show in every scene");
@@ -181,8 +183,10 @@ export component SourceOptions inherits Rectangle {
                     label: @tr("Timed show");
                     summary: data.cue-remaining-ms > 0 ? @tr("{} left on Program", Studio.cue-left-text(data.cue-remaining-ms)) : @tr("Shows for a set time, then hides");
                     hint: @tr("Hide with the hourglass in Sources if you need to, or press Show now here. It appears for the duration and hides again without Undo. Leave Show duration at 0 and use the eye in Sources for a lasting show.");
+                }
+                if root.timed: Field {
+                    label: @tr("Show for");
                     NumberField {
-                        preferred-width: Tokens.size-control-lg * 3;
                         live: false;
                         label: @tr("Show duration of {} in milliseconds", data.name);
                         unit: @tr("ms");
@@ -193,6 +197,8 @@ export component SourceOptions inherits Rectangle {
                 if root.timed: HorizontalLayout {
                     spacing: Tokens.size-field-gap;
                     Button {
+                        horizontal-stretch: 1;
+                        preferred-width: 0;
                         lead: IconName.eye;
                         text: @tr("Show now");
                         kind: "primary";
@@ -201,6 +207,8 @@ export component SourceOptions inherits Rectangle {
                         clicked => { Studio.show-item(data.item-id); }
                     }
                     Button {
+                        horizontal-stretch: 1;
+                        preferred-width: 0;
                         lead: IconName.eraser;
                         text: @tr("Clear");
                         dense: true;

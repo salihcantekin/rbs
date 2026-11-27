@@ -4,6 +4,7 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, InfoHint, NumberField, SectionHeader, SegmentedControl, Select, TextArea, TextField, Toggle, CaptionField as Field } from "components.slint";
 import { SettingsCallout } from "settings.slint";
+import { ToggleRow } from "properties_parts.slint";
 import { BrowserData, Studio, Sections, IconName } from "base/types.slint";
 
 // A collapsible group of fields under a SectionHeader. A closed section draws nothing and
@@ -31,24 +32,34 @@ export component Section inherits VerticalLayout {
         }
     }
     spacing: Tokens.size-field-gap;
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        SectionHeader {
-            horizontal-stretch: 1;
-            title: root.title;
-            collapsible: true;
-            open: !root.closed;
-            toggled(o) => { Sections.set-closed(root.id, !o); }
-        }
-        if root.changed && !root.closed: IconButton {
-            icon: IconName.reset;
-            name: @tr("Reset {} to {}", root.title, root.default-text);
-            clicked => { root.reset(); }
-        }
-        if root.hint != "" && !root.closed: InfoHint {
-            label: root.title;
-            text: root.hint;
-        }
+    // The header is a band, so each category stands out from the fields under it.
+    Rectangle {
+        height: Tokens.size-control-md;
+        border-radius: Tokens.radius-sm;
+        background: Theme.surface-overlay;
+        HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.size-field-gap;
+            SectionHeader {
+                horizontal-stretch: 1;
+                title: root.title;
+                collapsible: true;
+                open: !root.closed;
+                band: true;
+                toggled(o) => { Sections.set-closed(root.id, !o); }
+            }
+            if root.changed && !root.closed: IconButton {
+                icon: IconName.reset;
+                name: @tr("Reset {} to {}", root.title, root.default-text);
+                clicked => { root.reset(); }
+            }
+            if root.hint != "" && !root.closed: InfoHint {
+                label: root.title;
+                text: root.hint;
+            }
+            }
     }
     // Slint cannot put @children in an `if`, so a closed section is hidden and takes
     // no room (like Shown): it draws and handles no input. Width follows the section
@@ -237,7 +248,7 @@ export component BrowserFields inherits VerticalLayout {
             }
         }
     }
-    if b.file: Toggle {
+    if b.file: ToggleRow {
         text: @tr("Reload when the file changes");
         label: @tr("Reload {} when its file changes", root.name);
         checked: b.reload-on-file-change;
@@ -345,7 +356,7 @@ export component BrowserFields inherits VerticalLayout {
             }
         }
     }
-    Toggle {
+    ToggleRow {
         text: @tr("Transparent background");
         label: @tr("Transparent background for {}", root.name);
         checked: b.transparent;
@@ -387,7 +398,7 @@ export component BrowserFields inherits VerticalLayout {
                 accepted(v) => { if v != b.script { Studio.set-browser-value(b.id, "script", v); } }
             }
         }
-        Toggle {
+        ToggleRow {
             text: @tr("Run when the page loads");
             label: @tr("Run the script of {} when the page loads", root.name);
             checked: b.script-on-load;
@@ -433,24 +444,14 @@ export component BrowserFields inherits VerticalLayout {
             linger: b.linger;
             linger-hint: @tr("Keeps the page running for this long after it leaves the screen. Like While in a scene, a running page can connect to the internet while nothing shows it, so a remote control that may not reach the network cannot set this.");
         }
-        HorizontalLayout {
-            spacing: Tokens.space-1;
-            Toggle {
-                horizontal-stretch: 1;
+        ToggleRow {
                 text: @tr("Retry when the page fails");
                 label: @tr("Retry {} when the page fails to load", root.name);
                 checked: b.retry-on-error;
                 toggled(on) => { Studio.set-browser-flag(b.id, "retry_on_error", on); }
-            }
-            VerticalLayout {
-                alignment: center;
-                InfoHint {
-                    label: @tr("Retry when the page fails");
-                    text: @tr("The last good picture stays on air while RBS loads the page again, never an error page.");
-                }
-            }
+            hint: @tr("The last good picture stays on air while RBS loads the page again, never an error page.");
         }
-        Toggle {
+        ToggleRow {
             text: @tr("Keep signed in");
             label: @tr("Keep {} signed in", root.name);
             checked: b.keep-signed-in;

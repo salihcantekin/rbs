@@ -9,6 +9,7 @@ import { CommandMenu } from "context_menu.slint";
 import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
 import { SourceOptions } from "source_options.slint";
+import { ActionPair, ToggleRow } from "properties_parts.slint";
 import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
 export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
@@ -2443,25 +2444,24 @@ export component LiveControlsPanel inherits Rectangle {
 
 // A section title that does not collapse (ADR-0076): the same look as SectionHeader,
 // with a rule to the end of the row, but plain text for screen readers.
-component SectionTitle inherits HorizontalLayout {
+component SectionTitle inherits Rectangle {
     in property <string> title;
-    spacing: Tokens.size-field-gap;
-    VerticalLayout {
-        alignment: center;
-        Text {
-            text: title.to-uppercase();
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            font-weight: Tokens.type-label-weight;
-            letter-spacing: Tokens.size-tracking-caps;
-            accessible-role: text;
-            accessible-label: title;
-        }
-    }
-    VerticalLayout {
-        horizontal-stretch: 1;
-        alignment: center;
-        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    background: Theme.surface-overlay;
+    accessible-role: text;
+    accessible-label: root.title;
+    Text {
+        x: Tokens.space-2;
+        width: parent.width - 2 * Tokens.space-2;
+        height: parent.height;
+        text: root.title;
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
     }
 }
 
@@ -2622,7 +2622,7 @@ component StyleFields inherits Section {
         height: Tokens.size-border;
         background: Theme.border-subtle;
     }
-    Checkbox {
+    ToggleRow {
         text: @tr("Border");
         checked: data.border;
         enabled: !data.locked;
@@ -2699,70 +2699,75 @@ component ArrangeFields inherits Section {
     hint: data.locked
         ? @tr("Unlock the source to change its transform.")
         : @tr("Drag the rotation, or turn by 90 with the buttons.");
-    // Icon-only buttons: two short rows (ADR-0084). Center H/V stay in the menus so
-    // this section does not grow.
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        alignment: start;
-        IconButton {
-            icon: IconName.flip-h;
-            name: @tr("Flip {} horizontally", data.name);
-            checked: data.flip-h;
-            enabled: !data.locked;
-            clicked => { Studio.transform-source(data.id, 0); }
-        }
-        IconButton {
-            icon: IconName.flip-v;
-            name: @tr("Flip {} vertically", data.name);
-            checked: data.flip-v;
-            enabled: !data.locked;
-            clicked => { Studio.transform-source(data.id, 1); }
-        }
-        IconButton {
-            icon: IconName.rotate-ccw;
-            name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
-            enabled: !data.locked;
-            clicked => { Studio.transform-source(data.id, 3); }
-        }
-        IconButton {
-            icon: IconName.rotate-cw;
-            name: @tr("Rotate {} 90 degrees clockwise", data.name);
-            enabled: !data.locked;
-            clicked => { Studio.transform-source(data.id, 2); }
-        }
-        IconButton {
-            icon: IconName.center;
-            name: @tr("Center {} on the canvas", data.name);
-            enabled: !data.locked;
-            clicked => { Studio.transform-source(data.id, 8); }
+    // Text buttons in captioned pairs (owner 2026-11-27, replacing ADR-0084's icon rows):
+    // every command in Properties is a dense text button. Center H/V stay in the menus.
+    Field {
+        label: @tr("Flip");
+        ActionPair {
+            first: @tr("Horizontal");
+            first-name: @tr("Flip {} horizontally", data.name);
+            first-lead: IconName.flip-h;
+            first-checked: data.flip-h;
+            first-enabled: !data.locked;
+            first-clicked => { Studio.transform-source(data.id, 0); }
+            second: @tr("Vertical");
+            second-name: @tr("Flip {} vertically", data.name);
+            second-lead: IconName.flip-v;
+            second-checked: data.flip-v;
+            second-enabled: !data.locked;
+            second-clicked => { Studio.transform-source(data.id, 1); }
         }
     }
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        alignment: start;
-        IconButton {
-            icon: IconName.fit;
-            name: @tr("Fit {} inside the canvas", data.name);
-            enabled: known && !data.locked;
-            clicked => { Studio.transform-source(data.id, 5); }
+    Field {
+        label: @tr("Rotate by 90°");
+        ActionPair {
+            first: @tr("Left");
+            first-name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
+            first-lead: IconName.rotate-ccw;
+            first-enabled: !data.locked;
+            first-clicked => { Studio.transform-source(data.id, 3); }
+            second: @tr("Right");
+            second-name: @tr("Rotate {} 90 degrees clockwise", data.name);
+            second-lead: IconName.rotate-cw;
+            second-enabled: !data.locked;
+            second-clicked => { Studio.transform-source(data.id, 2); }
         }
-        IconButton {
-            icon: IconName.fill-canvas;
-            name: @tr("Fill the canvas with {}", data.name);
-            enabled: known && !data.locked;
-            clicked => { Studio.transform-source(data.id, 6); }
-        }
-        IconButton {
-            icon: IconName.stretch;
-            name: @tr("Stretch {} to the canvas", data.name);
-            enabled: known && !data.locked;
-            clicked => { Studio.transform-source(data.id, 7); }
-        }
-        IconButton {
-            icon: IconName.reset;
-            name: @tr("Reset the transform of {}", data.name);
-            enabled: known && !data.locked;
-            clicked => { Studio.transform-source(data.id, 9); }
+    }
+    Field {
+        label: @tr("Place on the canvas");
+        VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            ActionPair {
+                first: @tr("Fit");
+                first-name: @tr("Fit {} inside the canvas", data.name);
+                first-lead: IconName.fit;
+                first-enabled: known && !data.locked;
+                first-clicked => { Studio.transform-source(data.id, 5); }
+                second: @tr("Fill");
+                second-name: @tr("Fill the canvas with {}", data.name);
+                second-lead: IconName.fill-canvas;
+                second-enabled: known && !data.locked;
+                second-clicked => { Studio.transform-source(data.id, 6); }
+            }
+            ActionPair {
+                first: @tr("Stretch");
+                first-name: @tr("Stretch {} to the canvas", data.name);
+                first-lead: IconName.stretch;
+                first-enabled: known && !data.locked;
+                first-clicked => { Studio.transform-source(data.id, 7); }
+                second: @tr("Centre");
+                second-name: @tr("Center {} on the canvas", data.name);
+                second-lead: IconName.center;
+                second-enabled: !data.locked;
+                second-clicked => { Studio.transform-source(data.id, 8); }
+            }
+            ActionPair {
+                first: @tr("Reset");
+                first-name: @tr("Reset the transform of {}", data.name);
+                first-lead: IconName.reset;
+                first-enabled: known && !data.locked;
+                first-clicked => { Studio.transform-source(data.id, 9); }
+            }
         }
     }
     // Under the buttons: drag sets the angle. The number is the value, not a field.
@@ -2770,7 +2775,9 @@ component ArrangeFields inherits Section {
     property <int> spin: 0;
     property <float> shown: -1;
     property <float> from: 0;
-    HorizontalLayout {
+    Field {
+      label: @tr("Angle");
+      HorizontalLayout {
         spacing: Tokens.size-field-gap;
         Slider {
             horizontal-stretch: 1;
@@ -2809,6 +2816,7 @@ component ArrangeFields inherits Section {
             vertical-alignment: center;
             accessible-role: none;
         }
+      }
     }
 }
 
@@ -2832,6 +2840,7 @@ component RegionPair inherits Rectangle {
         y: 0px;
         width: root.stacked ? root.width : root.half;
         text: root.first;
+        dense: true;
         kind: "secondary";
         enabled: root.enabled;
         accessible-name: root.first-name;
@@ -2842,6 +2851,7 @@ component RegionPair inherits Rectangle {
         y: root.stacked ? one.height + Tokens.size-field-gap : 0px;
         width: root.stacked ? root.width : root.half;
         text: root.second;
+        dense: true;
         kind: "secondary";
         enabled: root.enabled;
         accessible-name: root.second-name;
@@ -2905,31 +2915,31 @@ component CropFields inherits Section {
             edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0), self.gesture); }
         }
     }
-    Text {
-        text: @tr("Show");
-        color: Theme.text-secondary;
-        font-size: Tokens.type-body-size;
-        accessible-role: none;
-    }
-    RegionPair {
-        data: root.data;
-        enabled: can-edit;
-        first: @tr("Canvas size");
-        first-name: @tr("Show the centre of {} at canvas size", data.name);
-        first-region: 1;
-        second: @tr("Whole picture");
-        second-name: @tr("Show all of {}, fitted to the canvas", data.name);
-        second-region: 0;
-    }
-    RegionPair {
-        data: root.data;
-        enabled: can-edit;
-        first: @tr("Left half");
-        first-name: @tr("Show the left half of {}", data.name);
-        first-region: 2;
-        second: @tr("Right half");
-        second-name: @tr("Show the right half of {}", data.name);
-        second-region: 3;
+    Field {
+        label: @tr("Show");
+        VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            RegionPair {
+                data: root.data;
+                enabled: can-edit;
+                first: @tr("Canvas size");
+                first-name: @tr("Show the centre of {} at canvas size", data.name);
+                first-region: 1;
+                second: @tr("Whole picture");
+                second-name: @tr("Show all of {}, fitted to the canvas", data.name);
+                second-region: 0;
+            }
+            RegionPair {
+                data: root.data;
+                enabled: can-edit;
+                first: @tr("Left half");
+                first-name: @tr("Show the left half of {}", data.name);
+                first-region: 2;
+                second: @tr("Right half");
+                second-name: @tr("Show the right half of {}", data.name);
+                second-region: 3;
+            }
+        }
     }
 }
 
@@ -3704,34 +3714,38 @@ component AudioFields inherits VerticalLayout {
                 overflow: elide;
             }
         }
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            alignment: stretch;
-            // Slot takes every leftover pixel; the readout stays a fixed token width on the right.
-            Rectangle {
-                horizontal-stretch: 1;
-                min-width: 0px;
-                preferred-width: 0px;
-                height: Tokens.size-control-sm;
-                Slider {
-                    width: parent.width;
-                    height: parent.height;
-                    label: @tr("Volume of {}", data.name);
-                    value: data.volume;
-                    value-text: data.volume-text;
-                    enabled: !data.muted;
-                    moved(v) => { Studio.set-source-volume(data.id, v); }
+        Field {
+            label: @tr("Volume");
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                alignment: stretch;
+                // Slot takes every leftover pixel; the readout stays a fixed token width on the right.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    height: Tokens.size-control-sm;
+                    Slider {
+                        width: parent.width;
+                        height: parent.height;
+                        label: @tr("Volume of {}", data.name);
+                        value: data.volume;
+                        value-text: data.volume-text;
+                        enabled: !data.muted;
+                        moved(v) => { Studio.set-source-volume(data.id, v); }
+                    }
+                }
+                ValueReadout {
+                    horizontal-stretch: 0;
+                    text: data.volume-text;
+                    color: data.muted ? Theme.text-disabled : Theme.text-secondary;
+                    accessible-label: @tr("Volume of {}, {}", data.name, data.volume-text);
                 }
             }
-            ValueReadout {
-                horizontal-stretch: 0;
-                text: data.volume-text;
-                color: data.muted ? Theme.text-disabled : Theme.text-secondary;
-                accessible-label: @tr("Volume of {}, {}", data.name, data.volume-text);
-            }
         }
-        Checkbox {
+        ToggleRow {
             text: @tr("Mute");
+            label: @tr("Mute {}", data.name);
             checked: data.muted;
             toggled(on) => { Studio.set-source-muted(data.id, on); }
         }
@@ -3786,7 +3800,7 @@ component AudioFields inherits VerticalLayout {
         title: @tr("Recording");
         id: "properties.recording";
         hint: @tr("Writes this source's sound to its own WAV file, in a folder with the recording. Changes apply to the next recording.");
-        Toggle {
+        ToggleRow {
             label: @tr("Record {} separately", data.name);
             text: @tr("Record separately");
             checked: data.record-separately;
@@ -3946,7 +3960,7 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
-    if data.media: Toggle {
+    if data.media: ToggleRow {
         text: @tr("Loop");
         label: @tr("Loop {}", data.name);
         checked: data.media-loop;
@@ -4077,21 +4091,14 @@ component SourceFields inherits VerticalLayout {
         }
     }
     // A display or a window can bring its sound along (ADR-0096).
-    if data.kind-code == 0 || data.kind-code == 1: HorizontalLayout {
-        spacing: Tokens.space-1;
-        Checkbox {
-            horizontal-stretch: 1;
+    if data.kind-code == 0 || data.kind-code == 1: ToggleRow {
             text: @tr("Capture audio too");
             checked: data.companion;
             toggled(on) => { Studio.set-companion-audio(data.id, on); }
-        }
-        InfoHint {
-            label: @tr("Capture audio too");
-            text: data.kind-code == 0
+     hint: data.kind-code == 0
                 ? @tr("Adds the system sound as its own audio source, without RBS's own sound. Capturing the system sound and another app's sound can play the same audio twice.")
                 : @tr("Adds this window's application sound as its own audio source. Capturing it and the system sound can play the same audio twice.");
-        }
-    }
+ }
     if !data.media && !data.slides: TextField {
         label: @tr("Search the list");
         placeholder: @tr("Search");
@@ -4257,23 +4264,13 @@ component TextFields inherits VerticalLayout {
             accepted(v) => { if v != t.text { Studio.set-text-value(t.id, "text", v); } }
         }
     }
-    if t.kind == 0 && t.file == "": HorizontalLayout {
-        spacing: Tokens.space-1;
-        Toggle {
-            horizontal-stretch: 1;
+    if t.kind == 0 && t.file == "": ToggleRow {
             text: @tr("Fill in fields");
             label: @tr("Fill in fields in {}", data.name);
             checked: t.fields;
             toggled(on) => { Studio.set-text-flag(t.id, "fields", on); }
-        }
-        VerticalLayout {
-            alignment: center;
-            InfoHint {
-                label: @tr("Fill in fields");
-                text: @tr("{{time}}, {{date}}, {{time:HH:mm}}, {{scene}}, {{recording_time}} and {{stream_time}} in the text are replaced by their value while it is shown.");
-            }
-        }
-    }
+     hint: @tr("{{time}}, {{date}}, {{time:HH:mm}}, {{scene}}, {{recording_time}} and {{stream_time}} in the text are replaced by their value while it is shown.");
+ }
     if t.kind == 0: Field {
         label: @tr("Read from file");
         HorizontalLayout {
@@ -4373,8 +4370,8 @@ component TextFields inherits VerticalLayout {
     Field {
         label: @tr("Font");
         HorizontalLayout {
-            alignment: start;
             Button {
+                horizontal-stretch: 1;
                 text: t.font == "" ? @tr("System font") : t.font;
                 icon: IconName.chevron-down;
                 menu: true;
@@ -4407,18 +4404,17 @@ component TextFields inherits VerticalLayout {
             }
         }
     }
-    HorizontalLayout {
-        spacing: Tokens.space-4;
-        alignment: start;
-        Checkbox {
-            text: @tr("Bold");
-            checked: t.bold;
-            toggled(on) => { Studio.set-text-number(t.id, "weight", on ? 700 : 400, 0); }
-        }
-        Checkbox {
-            text: @tr("Italic");
-            checked: t.italic;
-            toggled(on) => { Studio.set-text-flag(t.id, "italic", on); }
+    Field {
+        label: @tr("Style");
+        ActionPair {
+            first: @tr("Bold");
+            first-name: @tr("Bold {}", data.name);
+            first-checked: t.bold;
+            first-clicked => { Studio.set-text-number(t.id, "weight", t.bold ? 400 : 700, 0); }
+            second: @tr("Italic");
+            second-name: @tr("Italic {}", data.name);
+            second-checked: t.italic;
+            second-clicked => { Studio.set-text-flag(t.id, "italic", !t.italic); }
         }
     }
     Field {
@@ -4433,22 +4429,12 @@ component TextFields inherits VerticalLayout {
         }
     }
     // One line (ADR-0150 decision 10): the picture is as wide as the text, for Scroll.
-    HorizontalLayout {
-        spacing: Tokens.space-1;
-        Toggle {
-            horizontal-stretch: 1;
+    ToggleRow {
             text: @tr("One line");
             label: @tr("One line for {}", data.name);
             checked: t.single-line;
             toggled(on) => { Studio.set-text-flag(t.id, "single_line", on); }
-        }
-        VerticalLayout {
-            alignment: center;
-            InfoHint {
-                label: @tr("One line");
-                text: @tr("Keeps the text on one line, as wide as the text. Use it with Scroll on the Transform tab.");
-            }
-        }
+        hint: @tr("Keeps the text on one line, as wide as the text. Use it with Scroll on the Transform tab.");
     }
     // Effects: each kept while off; its switch draws it.
     FeatureSection {

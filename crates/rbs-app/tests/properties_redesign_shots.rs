@@ -9,7 +9,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // A tool run by hand.
 
 use rbs_app_ui::tokens_apply::{apply_tokens, slot};
-use rbs_app_ui::{PropertiesProbe, Sections, SourceData, Studio, TextData, Theme, Tokens};
+use rbs_app_ui::{
+    FilterData, FilterFieldData, PropertiesProbe, Sections, SourceData, Studio, TextData, Theme,
+    Tokens,
+};
 use rbs_ui::tokens::{Base, ThemeBody, Tokens as TokenFile};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -35,6 +38,33 @@ fn source(text: bool) -> SourceData {
         pic_w: 2560,
         pic_h: 1440,
         record_separately: !text,
+        audio: !text,
+        volume: 0.7,
+        volume_text: "-6.0 dB".into(),
+        filters: ModelRc::new(VecModel::from(vec![FilterData {
+            id: 3,
+            name: "Colour correction".into(),
+            enabled: true,
+            known: true,
+            fields: ModelRc::new(VecModel::from(vec![
+                FilterFieldData {
+                    label: "Brightness".into(),
+                    kind: 0,
+                    position: 0.5,
+                    value_text: "0.00".into(),
+                    ..Default::default()
+                },
+                FilterFieldData {
+                    label: "Mode".into(),
+                    kind: 1,
+                    dropdown: true,
+                    options: ModelRc::new(VecModel::from(vec!["Soft".into(), "Hard".into()])),
+                    ..Default::default()
+                },
+            ])),
+            ..Default::default()
+        }])),
+        selected_filter: 0,
         show_for_ms: 5000,
         item_id: 7,
         border_color: "#ffffff".into(),
@@ -136,6 +166,9 @@ fn properties_redesign_screenshots() {
         ("image-wide", false, 0, true, 720.0, 640.0),
         ("image-short", false, 0, true, 260.0, 420.0),
         ("text-tall", true, 4, false, 260.0, 1150.0),
+        ("image-tall", false, 0, false, 260.0, 1500.0),
+        ("audio", false, 2, false, 260.0, 900.0),
+        ("filters", false, 1, false, 260.0, 900.0),
     ];
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
         for (n, text, tab, open, width, height) in looks {
