@@ -1,6 +1,6 @@
 # ADR-0179: Camera background removal: key and reference-frame options first, a person-segmentation port later
 
-- Status: Accepted (2026-11-24)
+- Status: Accepted (2026-11-24); decision 4's clause "until the first mask exists the filter publishes nothing" superseded in part by [ADR-0199](0199-background-removal-keeps-the-camera-until-its-first-mask.md) (proposed): right after the filter is turned on, the plain picture stays until the first mask, 0.5 s at most
 - Date: 2026-11-24
 - Deciders: Salih (owner)
 - Builds on: [ADR-0053](0053-item-style-and-video-filter-chains.md) decisions 2, 6 and 7 (filters are GPU nodes of a per-source chain; background removal gets its own port), [ADR-0006](0006-three-tier-plugin-model.md) (AI models belong to the Process tier), [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0162](0162-extension-ready-registries-and-plugin-order.md)

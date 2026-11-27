@@ -7,9 +7,11 @@
 //! the newest matte the session has finished is uploaded to a one-channel
 //! texture; the composite pass multiplies the full-size picture by the refined matte.
 //! Nothing waits: a ring that is full or a session that is busy drops the new picture,
-//! and the picture is drawn with the matte of an earlier one (ADR-0179 decision 4). Until
-//! the first matte exists the node publishes nothing, so the unfiltered picture is
-//! never shown; then the result fades in over 0.2 s of master-clock time. The session
+//! and the picture is drawn with the matte of an earlier one (ADR-0179 decision 4).
+//! Right after the node joins the schedule it keeps the plain picture (on screen before
+//! the click) until the first matte, 0.5 s at most, then cross-fades to the result over
+//! 0.2 s (ADR-0199). Any other time without a matte it publishes nothing, so the
+//! unfiltered picture never reappears, and the result then fades in from nothing. The session
 //! is opened in `prepare` and closed in `release`, on the control thread.
 //!
 //! The only readback is the small picture (named exception of ADR-0179 decision 3).
@@ -47,9 +49,13 @@ pub const OUT_PIN: usize = 0;
 pub const RING: usize = 3;
 /// Output textures kept by the node (the one read downstream and the one drawn next).
 const OUTPUT_RING: usize = 2;
-/// Frame time over which the person fades in after the first matte (owner, 2026-11-27):
-/// the filter shows nothing before it, and the fade softens the jump from nothing.
+/// Frame time over which the result fades in after the first matte (owner, 2026-11-27):
+/// from the plain picture when the filter has just been turned on, else from nothing.
 const FADE_IN_NANOS: u64 = 200_000_000;
+/// After the filter is turned on, the plain picture stays at most this long while the
+/// first matte is made (ADR-0199): it was on screen before the click, so the layer does
+/// not vanish for the few ticks the first matte takes. Later, nothing is shown instead.
+const KEEP_PLAIN_NANOS: u64 = 500_000_000;
 
 const IDLE: u8 = 0;
 const MAPPING: u8 = 1;
@@ -163,8 +169,16 @@ struct Written {
     size: [u32; 2],
     decode: Transfer,
     look: Look,
-    /// How far the fade-in is, 0 to 1.
-    fade: f32,
+    fade: Fade,
+}
+
+/// The fade-in after the first matte.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fade {
+    /// How far it is, 0 to 1.
+    amount: f32,
+    /// From the plain picture (just turned on) rather than from nothing.
+    from_plain: bool,
 }
 
 /// What the last published picture was made of.
@@ -203,9 +217,8 @@ pub struct BackgroundRemovalNode {
     ring: Ring,
     /// The picture drawn last in Exact mode, kept alive while the ring moves on.
     held: Option<VideoFrame>,
-    /// Tick time of the first picture drawn with a matte since the filter last showed
-    /// nothing: the fade-in starts there.
-    fade_from: Option<Timestamp>,
+    /// The plain picture kept after joining the schedule and the fade-in (ADR-0199).
+    start: Start,
     /// The previous tick's time while in the schedule.
     last_tick: Option<Timestamp>,
 }
@@ -241,7 +254,7 @@ impl BackgroundRemovalNode {
             rgb: YuvToRgb::new(),
             ring: Ring::default(),
             held: None,
-            fade_from: None,
+            start: Start::default(),
             last_tick: None,
         };
         (node, sender, stats)
@@ -533,7 +546,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.ring.clear(pool);
         self.held = None;
         self.rgb.release();
-        self.fade_from = None;
+        self.start = Start::default();
         self.last_tick = None;
     }
 
@@ -544,6 +557,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let small_id = self.small_texture.ok_or(NodeError::NotReady)?;
         let tick_time = ctx.tick().time;
         let previous_tick = self.last_tick.replace(tick_time).unwrap_or(tick_time);
+        // Just turned on and no matte yet: the plain picture stays (ADR-0199).
+        let keep_plain = self.start.keeps_plain(tick_time, self.matte.is_some());
         let (inputs, outputs, local) = ctx.parts();
 
         // What the input offers; a 4:2:0 input is decoded to RGB first, once per picture.
@@ -556,8 +571,10 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // Exact copies each picture into node-owned textures (the source lends only a few).
         let exact = values.choice(SYNC) == 0;
         let input = frame.and_then(|frame| describe(&local.pool, frame));
+        let plain = frame.filter(|_| keep_plain).and_then(VideoFrame::share);
         let Some((input_id, size, decode, time)) = input else {
             self.drawn = None;
+            self.start.plain_shown = false;
             drop(outputs.set_video(OUT_PIN, None)?);
             return Ok(());
         };
@@ -607,21 +624,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 }
                 Some(index) => {
                     if self.down_written != Some((size, decode)) {
-                        let mut u: UniformBlock = [[0.0; 4]; 16];
-                        u[0] = [
-                            1.0 / self.small[0] as f32,
-                            1.0 / self.small[1] as f32,
-                            0.0,
-                            0.0,
-                        ];
-                        u[15] = [
-                            1.0 / size[0] as f32,
-                            1.0 / size[1] as f32,
-                            0.0,
-                            decode.code(),
-                        ];
-                        gpu.queue()
-                            .write_buffer(&prepared.down_buffer, 0, bytemuck::bytes_of(&u));
+                        write_down(gpu, &prepared.down_buffer, self.small, size, decode);
                         self.down_written = Some((size, decode));
                     }
                     let queued = queue_readback(
@@ -673,10 +676,13 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // 4. Nothing is published before the first matte (ADR-0179 decision 4).
         let Some((matte_id, _)) = self.matte else {
             self.drawn = None;
-            self.fade_from = None;
-            drop(outputs.set_video(OUT_PIN, None)?);
+            self.start.fade_from = None;
+            // Only right after the filter was turned on; else nothing (decision 4).
+            self.start.plain_shown = plain.is_some();
+            drop(outputs.set_video(OUT_PIN, plain)?);
             return Ok(());
         };
+        drop(plain);
         // The picture drawn with the matte: the newest one, or the one it was made from.
         let (input_id, size, decode, time) = picture_to_draw(
             &mut self.held,
@@ -690,7 +696,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // On the master clock, so a picture that does not change still fades in.
         // It starts at the tick before, the last one that showed nothing, so the first
         // frame is already one tick into the fade.
-        let fade = fade_in(*self.fade_from.get_or_insert(previous_tick), tick_time);
+        let fade = self.start.fade(previous_tick, tick_time);
         let state = Written {
             edges: edge,
             size,
@@ -873,14 +879,14 @@ fn take_matte(
 fn write_composite(
     gpu: &GpuContext,
     prepared: &Prepared,
-    (edge, look, fade): ([f32; 2], Look, f32),
+    (edge, look, fade): ([f32; 2], Look, Fade),
     size: [u32; 2],
     decode: Transfer,
 ) {
     let mut u: UniformBlock = [[0.0; 4]; 16];
-    u[0] = [edge[0], edge[1], 0.0, 0.0];
+    u[0] = [edge[0], edge[1], f32::from(u8::from(fade.from_plain)), 0.0];
     u[1] = look.colour;
-    u[2] = [look.mode, look.blur[0], look.blur[1], fade];
+    u[2] = [look.mode, look.blur[0], look.blur[1], fade.amount];
     u[15] = [
         1.0 / size[0] as f32,
         1.0 / size[1] as f32,
@@ -890,6 +896,67 @@ fn write_composite(
     gpu.queue()
         .write_buffer(&prepared.comp_buffer, 0, bytemuck::bytes_of(&u));
     blur::write(gpu, prepared, (edge, look), size, decode);
+}
+
+/// What the node does right after it joins the schedule (ADR-0199).
+#[derive(Debug, Default)]
+struct Start {
+    /// The first tick in the schedule: the plain picture is kept from there.
+    joined: Option<Timestamp>,
+    /// A matte was drawn since the node joined the schedule.
+    had_matte: bool,
+    /// The last tick published the plain picture.
+    plain_shown: bool,
+    /// Where the running fade-in started; `None` while nothing is drawn with a matte.
+    fade_from: Option<Timestamp>,
+    /// The running fade starts from the plain picture, not from nothing.
+    fade_from_plain: bool,
+}
+
+impl Start {
+    /// Whether the input is published unchanged: only right after the node joined the
+    /// schedule, before its first matte and for 0.5 s at most (ADR-0199).
+    fn keeps_plain(&mut self, now: Timestamp, has_matte: bool) -> bool {
+        let joined = *self.joined.get_or_insert(now);
+        !self.had_matte
+            && !has_matte
+            && now.as_nanos().saturating_sub(joined.as_nanos()) < KEEP_PLAIN_NANOS
+    }
+
+    /// The fade for a picture drawn with a matte at tick `now`. A fade starts at the tick
+    /// before (the last one without a matte), so the first frame is one tick into it, and
+    /// from the plain picture when that tick showed it.
+    fn fade(&mut self, previous: Timestamp, now: Timestamp) -> Fade {
+        if self.fade_from.is_none() {
+            self.fade_from = Some(previous);
+            self.fade_from_plain = self.plain_shown;
+        }
+        self.had_matte = true;
+        self.plain_shown = false;
+        Fade {
+            amount: fade_in(self.fade_from.unwrap_or(previous), now),
+            from_plain: self.fade_from_plain,
+        }
+    }
+}
+
+/// The downscale pass's uniforms: the small size and the input's size and transfer.
+fn write_down(
+    gpu: &GpuContext,
+    buffer: &wgpu::Buffer,
+    small: [u32; 2],
+    size: [u32; 2],
+    decode: Transfer,
+) {
+    let mut u: UniformBlock = [[0.0; 4]; 16];
+    u[0] = [1.0 / small[0] as f32, 1.0 / small[1] as f32, 0.0, 0.0];
+    u[15] = [
+        1.0 / size[0] as f32,
+        1.0 / size[1] as f32,
+        0.0,
+        decode.code(),
+    ];
+    gpu.queue().write_buffer(buffer, 0, bytemuck::bytes_of(&u));
 }
 
 /// How far the fade-in is at `now` when it started at `from`: 0 to 1, on frame time.

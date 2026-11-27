@@ -13,16 +13,22 @@ use rbs_core::media::PixelFormat;
 use rbs_filters::conformance::Picture;
 
 #[test]
-fn it_publishes_nothing_until_a_matte_exists_then_cuts_the_person_out() {
+fn it_keeps_the_plain_picture_until_the_first_matte_then_cuts_the_person_out() {
     let Some(ctx) = gpu() else { return };
     let mut rig = Rig::new(ctx, [8, 4]);
     rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
-    // The first tick has no matte: nothing is published, never the plain picture.
+    // Just turned on, no matte yet: the picture that was on screen before stays, so the
+    // layer does not vanish (ADR-0199).
+    // (The schedule starts on the first tick, the filter runs from the second.)
     rig.tick();
+    rig.tick();
+    let plain = rig.output().expect("the plain picture stays");
     assert!(
-        lock(&rig.last).is_none(),
-        "the unfiltered picture must not show"
+        (plain.at(13, 4)[1] - 0.5).abs() < 0.02,
+        "plain: {:?}",
+        plain.at(13, 4)
     );
+    assert_eq!(rig.stats.frames(), 0);
     assert!(rig.until_output(), "no output after a matte");
     let out = rig.output().unwrap();
     assert_eq!((out.width, out.height), (16, 8));
@@ -38,27 +44,54 @@ fn it_publishes_nothing_until_a_matte_exists_then_cuts_the_person_out() {
 }
 
 #[test]
-fn the_person_fades_in_after_the_first_matte() {
+fn the_person_cross_fades_in_from_the_plain_picture() {
     let Some(ctx) = gpu() else { return };
     let mut rig = Rig::new(ctx, [8, 4]);
     rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
     assert!(rig.until_first_output());
-    // The first frame with a matte is one tick (1/60 s) into the 0.2 s fade, not at
-    // full strength.
-    let first = rig.output().unwrap().at(2, 4);
-    assert!(
-        first[3] > 0.0 && first[3] < 0.2,
-        "fade starts low: {first:?}"
-    );
-    assert!(
-        (first[1] / first[3] - 0.5).abs() < 0.02,
-        "same colour: {first:?}"
-    );
+    // The first frame with a matte is one tick (1/60 s) into the 0.2 s cross-fade from
+    // the plain picture: the room is still almost all there, the person is whole.
+    let first = rig.output().unwrap();
+    let room = first.at(13, 4);
+    assert!(room[3] > 0.8 && room[3] < 1.0, "room fades out: {room:?}");
+    assert!((first.at(2, 4)[1] - 0.5).abs() < 0.02, "person kept");
     // The picture does not change, but the fade runs on the master clock.
     rig.finish_fade();
-    let full = rig.output().unwrap().at(2, 4);
-    assert!((full[1] - 0.5).abs() < 0.02, "faded in: {full:?}");
-    assert!((full[3] - 1.0).abs() < 0.02, "opaque: {full:?}");
+    let done = rig.output().unwrap();
+    assert!(
+        done.at(13, 4).iter().all(|c| c.abs() < 0.02),
+        "room cut out"
+    );
+    assert!((done.at(2, 4)[3] - 1.0).abs() < 0.02, "person opaque");
+}
+
+#[test]
+fn the_plain_picture_is_kept_half_a_second_at_most() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.log.hold.store(true, Ordering::Relaxed);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    // The schedule starts on the first tick, the filter runs from the second. 0.5 s at
+    // 60 fps is 30 ticks: the plain picture until then, nothing after.
+    rig.tick();
+    for _ in 0..30 {
+        rig.tick();
+        assert!(
+            lock(&rig.last).is_some(),
+            "tick {}: plain picture",
+            rig.tick
+        );
+    }
+    rig.tick();
+    assert!(
+        lock(&rig.last).is_none(),
+        "a slow session shows nothing, not the room"
+    );
+    // When the matte comes, the person fades in from nothing.
+    rig.log.hold.store(false, Ordering::Relaxed);
+    assert!(rig.until_first_output());
+    let room = rig.output().unwrap().at(13, 4);
+    assert!(room.iter().all(|c| c.abs() < 0.02), "no room: {room:?}");
 }
 
 #[test]

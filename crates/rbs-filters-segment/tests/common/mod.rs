@@ -65,6 +65,8 @@ pub struct Log {
     pub last: Mutex<Option<(Size, PixelFormat, [u8; 4])>>,
     /// The matte the session answers with: left half person.
     pub fail_open: AtomicBool,
+    /// While set, the session finishes no matte.
+    pub hold: AtomicBool,
 }
 
 struct Fake {
@@ -100,6 +102,9 @@ impl PersonMaskSession for Fake {
         SubmitOutcome::Accepted
     }
     fn latest(&mut self) -> Result<Option<Matte>, SegmentError> {
+        if self.log.hold.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         for entry in &mut self.pending {
             entry.1 = entry.1.saturating_sub(1);
         }
@@ -371,13 +376,14 @@ impl Rig {
         }
     }
 
-    /// Like `until_output`, but stops at the first published frame (fade-in at 0).
+    /// Like `until_output`, but stops at the first frame drawn with a matte (the fade-in
+    /// has just begun). Before it the probe may hold the plain picture (ADR-0199).
     pub fn until_first_output(&mut self) -> bool {
         let guard = std::time::Instant::now();
         while guard.elapsed() < std::time::Duration::from_secs(20) {
             self.tick();
             self.ctx.wait_idle().unwrap();
-            if lock(&self.last).is_some() {
+            if self.stats.frames() > 0 && lock(&self.last).is_some() {
                 return true;
             }
             std::thread::yield_now();

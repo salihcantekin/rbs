@@ -1,10 +1,11 @@
 // Background removal (org.rbs.filter.background-removal): the picture over a new
 // background, cut by the refined matte. Group 2 is the matte, one channel, any size,
 // sampled bilinearly. Output: linear light, premultiplied.
-// u[0]: low edge, high edge (matte values), 0, 0.
+// u[0]: low edge, high edge (matte values), fade from the plain picture (1) or from
+//       nothing (0), 0.
 // u[1]: background colour, linear light, premultiplied (mode 2).
 // u[2]: mode (0 transparent, 1 blur, 2 colour), blur radius in uv along x and along y,
-//       fade-in (0 to 1: the whole result is scaled by it, premultiplied).
+//       fade-in (0 to 1: the result is mixed with the plain picture or scaled by it).
 @group(2) @binding(0) var matte: texture_2d<f32>;
 @group(2) @binding(1) var matte_sampler: sampler;
 
@@ -34,13 +35,20 @@ fn guided_matte(uv: vec2<f32>, c: vec4<f32>) -> f32 {
     return sum / weight;
 }
 
+// The result faded in: from the plain picture `c` just after the filter was turned on
+// (ADR-0199), else from nothing. Premultiplied, so both are a plain mix.
+fn faded(c: vec4<f32>, result: vec4<f32>) -> vec4<f32> {
+    let start = c * u[0].z;
+    return mix(start, result, u[2].w);
+}
+
 @fragment
 fn fs_main(in: FilterIn) -> @location(0) vec4<f32> {
     let c = sample_linear(in.uv);
     let m = guided_matte(in.uv, c);
     let a = smoothstep(u[0].x, u[0].y, m);
     if (u[2].x < 0.5) {
-        return c * a * u[2].w;
+        return faded(c, c * a);
     }
     var bg = u[1];
     if (u[2].x < 1.5) {
@@ -50,5 +58,5 @@ fn fs_main(in: FilterIn) -> @location(0) vec4<f32> {
         let keep = smoothstep(0.006, 0.03, u[2].z);
         bg = vec4<f32>(mix(c.rgb, r.rgb / max(r.a, 1e-3), keep), 1.0);
     }
-    return (c * a + bg * (1.0 - a)) * u[2].w;
+    return faded(c, c * a + bg * (1.0 - a));
 }
