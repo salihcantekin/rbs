@@ -46,6 +46,7 @@ mod projector;
 mod quit;
 mod replay_page;
 mod reveal;
+mod section_keys;
 mod shortcuts_page;
 mod single;
 mod source_list_calls;
@@ -74,6 +75,7 @@ use rbs_ui::session::CommandError;
 use rbs_ui::store::{StoreError, WorkspaceStore};
 use rbs_ui::workspace::WindowContent;
 use rbs_ui::{LayoutCommand, LayoutSession, LiveStatus, Origin, PanelId, Toast, builtin};
+use section_keys::section_key;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use studio_start::deliver;
 
@@ -4068,28 +4070,6 @@ fn close_preview() {
     interact::drop_pictures();
 }
 
-/// Sections that start closed (ADR-0078): the workspace lists them when the user
-/// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 7] = [
-    "sources.global",
-    "mixer.hidden",
-    "mixer.loudness",
-    "properties.text-outline",
-    "properties.text-shadow",
-    "properties.text-background",
-    "properties.scroll",
-];
-const OPENED_SUFFIX: &str = "-open";
-
-/// The key a section is stored under, and whether listing it means "closed".
-fn section_key(id: &str) -> (String, bool) {
-    if CLOSED_BY_DEFAULT.contains(&id) {
-        (format!("{id}{OPENED_SUFFIX}"), false)
-    } else {
-        (id.to_owned(), true)
-    }
-}
-
 /// The ids in a comma-separated list of sections (Properties' Collapse all).
 fn fold_ids(ids: &str) -> impl Iterator<Item = &str> {
     ids.split(',').map(str::trim).filter(|id| !id.is_empty())
@@ -4206,6 +4186,7 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
             }
         });
     });
+    g.on_props_matches(|title, query| section_keys::matches(&title, &query));
     // Properties' Collapse all / Expand all: the sections it draws now, by id.
     let c = ctx.clone();
     g.on_list_state(move |ids, _rev| {

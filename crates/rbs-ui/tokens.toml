@@ -138,6 +138,10 @@ format = 4
 "size.menu.md" = 300
 # A setting row narrower than this puts its control under its name (ADR-0114).
 "size.row.stack-below" = 280
+# Properties: the narrowest and widest one column of its fields gets. The panel shows two
+# columns of sections from twice the narrowest (and a gap), and never makes a column wider.
+"size.props.column-min" = 240
+"size.props.column-max" = 440
 # Height of a picture at the start of a ListRow (16:9 well): small, medium, large.
 "size.row.picture.sm" = 24
 "size.row.picture.md" = 36

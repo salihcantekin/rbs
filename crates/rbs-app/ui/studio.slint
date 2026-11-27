@@ -8,6 +8,7 @@ import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCal
 import { CommandMenu } from "context_menu.slint";
 import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
+import { SourceOptions } from "source_options.slint";
 import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
 export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
@@ -2942,6 +2943,7 @@ component ScrollFields inherits FeatureSection {
     title: @tr("Scroll");
     id: "properties.scroll";
     hint: @tr("Moves the picture through its box, like a news ticker. For a long text, turn on One line on the Text tab.");
+    summary: data.scroll-on ? @tr("{} px/s", data.scroll-speed) : "";
     on: data.scroll-on;
     toggled(on) => { root.set(on, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, 0); }
     function set(on: bool, dir: int, speed: float, gap: float, repeat: int, start: int, fade: float, gesture: int) {
@@ -3075,64 +3077,96 @@ component ScrollFields inherits FeatureSection {
     }
 }
 
-component TransformFields inherits VerticalLayout {
+component TransformFields inherits HorizontalLayout {
     in property <SourceData> data;
+    // The panel is wide enough for two columns of sections (`size.props.column-min`).
+    in property <bool> wide;
     spacing: Tokens.size-section-gap;
-    alignment: start;
-    if data.picture: Section {
-        title: @tr("Position and size");
-        id: "properties.position";
-        hint: data.locked
-            ? @tr("Unlock the source to change its position and size.")
-            : @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            // Equal columns, whatever the values' lengths.
-            NumberField {
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                prefix: @tr("X");
-                label: @tr("Position X of {}", data.name);
-                value: data.x;
-                enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h, self.gesture); }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        preferred-width: 0;
+        spacing: Tokens.size-section-gap;
+        alignment: start;
+        if data.picture: Section {
+            title: @tr("Position and size");
+            id: "properties.position";
+            hint: data.locked
+                ? @tr("Unlock the source to change its position and size.")
+                : @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                // Equal columns, whatever the values' lengths.
+                NumberField {
+                    horizontal-stretch: 1;
+                    preferred-width: 0;
+                    prefix: @tr("X");
+                    label: @tr("Position X of {}", data.name);
+                    value: data.x;
+                    enabled: !data.locked;
+                    edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h, self.gesture); }
+                }
+                // The room of the proportion lock below, so X and W, Y and H line up.
+                Rectangle { width: Tokens.size-control-sm; }
+                NumberField {
+                    horizontal-stretch: 1;
+                    preferred-width: 0;
+                    prefix: @tr("Y");
+                    label: @tr("Position Y of {}", data.name);
+                    value: data.y;
+                    enabled: !data.locked;
+                    edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h, self.gesture); }
+                }
             }
-            NumberField {
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                prefix: @tr("Y");
-                label: @tr("Position Y of {}", data.name);
-                value: data.y;
-                enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h, self.gesture); }
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                NumberField {
+                    horizontal-stretch: 1;
+                    preferred-width: 0;
+                    prefix: @tr("W");
+                    label: @tr("Width of {}", data.name);
+                    value: data.w;
+                    enabled: !data.locked;
+                    edited(v) => {
+                        // Locked together, the height follows the picture's own proportions.
+                        Studio.set-source-box(data.id, data.x, data.y, v, Studio.props-aspect && data.w > 0 ? round(v * data.h / data.w) : data.h, self.gesture);
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: IconName.link;
+                        checked: Studio.props-aspect;
+                        name: Studio.props-aspect ? @tr("Width and height change together") : @tr("Keep the proportions of width and height");
+                        enabled: !data.locked;
+                        clicked => { Studio.props-aspect = !Studio.props-aspect; }
+                    }
+                }
+                NumberField {
+                    horizontal-stretch: 1;
+                    preferred-width: 0;
+                    prefix: @tr("H");
+                    label: @tr("Height of {}", data.name);
+                    value: data.h;
+                    enabled: !data.locked;
+                    edited(v) => {
+                        Studio.set-source-box(data.id, data.x, data.y, Studio.props-aspect && data.h > 0 ? round(v * data.w / data.h) : data.w, v, self.gesture);
+                    }
+                }
             }
         }
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            NumberField {
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                prefix: @tr("W");
-                label: @tr("Width of {}", data.name);
-                value: data.w;
-                enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h, self.gesture); }
-            }
-            NumberField {
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                prefix: @tr("H");
-                label: @tr("Height of {}", data.name);
-                value: data.h;
-                enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v, self.gesture); }
-            }
-        }
+        if data.picture: ArrangeFields { data: data; }
+        if data.picture: CropFields { data: data; }
+        if data.picture && !root.wide: StyleFields { data: data; }
+        if data.picture && !root.wide: ScrollFields { data: data; }
     }
-    if data.picture: ArrangeFields { data: data; }
-    if data.picture: CropFields { data: data; }
-    if data.picture: StyleFields { data: data; }
-    if data.picture: ScrollFields { data: data; }
+    if root.wide: VerticalLayout {
+        horizontal-stretch: 1;
+        preferred-width: 0;
+        spacing: Tokens.size-section-gap;
+        alignment: start;
+        if data.picture: StyleFields { data: data; }
+        if data.picture: ScrollFields { data: data; }
+    }
 }
 
 
@@ -4420,6 +4454,7 @@ component TextFields inherits VerticalLayout {
     FeatureSection {
         title: @tr("Outline");
         id: "properties.text-outline";
+        summary: t.outline ? @tr("{} px · {}", t.outline-width, t.outline-color) : "";
         on: t.outline;
         toggled(on) => { Studio.set-text-effect(t.id, 0, on); }
         HorizontalLayout {
@@ -4451,6 +4486,7 @@ component TextFields inherits VerticalLayout {
     FeatureSection {
         title: @tr("Shadow");
         id: "properties.text-shadow";
+        summary: t.shadow ? @tr("{}, {}, {} px", t.shadow-x, t.shadow-y, t.shadow-blur) : "";
         on: t.shadow;
         toggled(on) => { Studio.set-text-effect(t.id, 1, on); }
         Field {
@@ -4503,6 +4539,7 @@ component TextFields inherits VerticalLayout {
     FeatureSection {
         title: @tr("Background");
         id: "properties.text-background";
+        summary: t.background ? @tr("{} · {} px", t.background-color, t.padding) : "";
         on: t.background;
         toggled(on) => { Studio.set-text-effect(t.id, 2, on); }
         HorizontalLayout {
@@ -4686,6 +4723,10 @@ component SourceProperties inherits VerticalLayout {
     // The foldable sections drawn for this source and tab, for Collapse all / Expand all
     // in the panel's title row. Keep in step with the `id`s of the sections below.
     // Filter settings show for the selected filter (an unknown type has none).
+    // Wide enough for two columns of sections (`size.props.column-min`), as the Transform tab
+    // draws them; one column never grows wider than `size.props.column-max`.
+    property <length> room: root.width - 2 * Tokens.size-panel-pad;
+    property <bool> two-columns: root.room >= 2 * Tokens.size-props-column-min + Tokens.size-section-gap;
     property <bool> filter-open: data.selected-filter >= 0 && data.filters.length > 0;
     property <string> folds: (data.media ? "properties.playback," : "")
         + (tab == 0 && data.picture ? "properties.position,properties.arrange,properties.crop,properties.shape,properties.scroll," : "")
@@ -4694,15 +4735,15 @@ component SourceProperties inherits VerticalLayout {
         + (tab == 2 && !data.picture ? "properties.recording,properties.audio-filters," + (root.filter-open ? "properties.filter-settings," : "") : "")
         + (tab == 4 ? "properties.text-outline,properties.text-shadow,properties.text-background," : "")
         + (tab == 5 ? "properties.browser-css,properties.browser-automation,properties.browser-behaviour," : "")
-        + (data.picture ? "properties.timed-show," : "")
-        + "properties.scenes"
-        + (data.picture ? ",properties.picture-recording" : "");
+        + "properties.options";
     init => { Studio.properties-folds = root.folds; }
     changed folds => { Studio.properties-folds = root.folds; }
-    spacing: Tokens.size-section-gap;
-    alignment: start;
-    // The source: its kind's icon, its name and kind, and its name as a field.
+    spacing: 0px;
+    // The source: its kind's icon, its name as a field, its kind and Delete. The header
+    // and the tabs stay in place; only the body below them scrolls.
     VerticalLayout {
+        padding: Tokens.size-panel-pad;
+        padding-bottom: Tokens.size-field-gap;
         spacing: Tokens.size-field-gap;
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
@@ -4710,14 +4751,11 @@ component SourceProperties inherits VerticalLayout {
                 alignment: center;
                 Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
             }
-            Text {
+            TextField {
                 horizontal-stretch: 1;
+                label: @tr("Name of {}", data.name);
                 text: data.name;
-                color: Theme.text-primary;
-                font-size: Tokens.type-label-size;
-                font-weight: Tokens.type-title-weight;
-                vertical-alignment: center;
-                overflow: elide;
+                accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
             }
             Text {
                 text: data.kind;
@@ -4750,213 +4788,119 @@ component SourceProperties inherits VerticalLayout {
                 confirmed => { root.confirm = false; Studio.delete-source(data.id); }
             }
         }
-        TextField {
-            label: @tr("Name of {}", data.name);
-            text: data.name;
-            accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
-        }
-    }
-    // A media file's playback (ADR-0108 decision 10): live actions, not undo steps.
-    if data.media: MediaPlayback { data: data; live-state: root.live-state; }
-    // Transform, Filters and, for a source with sound, Audio, then Source (ADR-0062, ADR-0076, ADR-0077).
-    if data.picture || has-source: Tabs {
-        label: @tr("Properties of {}", data.name);
-        options: is-text ? [@tr("Text"), @tr("Transform"), @tr("Filters")]
-            : is-browser ? (data.audio ? [@tr("Page"), @tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Page"), @tr("Transform"), @tr("Filters")])
-            : has-source
-            ? (data.picture
-                ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
-                : [@tr("Audio"), @tr("Source")])
-            : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
-        index: is-text ? (tab == 4 ? 0 : tab + 1) : is-browser ? (tab == 5 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
-        selected(i) => {
-            if is-text { Studio.properties-tab = i == 0 ? 4 : i - 1; }
-            else if is-browser { Studio.properties-tab = i == 0 ? 5 : i - 1; }
-            else if has-source && i == before-source { Studio.properties-tab = 3; }
-            else if data.picture { Studio.properties-tab = i; }
-            else { Studio.properties-tab = 2; }
-        }
-    }
-    // Filters and the sync offset belong to the source: an edit shows on air at once.
-    if live-state != 0 && (tab == 1 || tab == 2): HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        Rectangle {
-            width: on-air.preferred-width + 2 * Tokens.space-2;
-            height: Tokens.type-caption-line;
-            border-radius: self.height / 2;
-            background: Theme.state-live;
-            on-air := Text {
-                text: @tr("On air");
-                color: Theme.text-on-live;
-                font-size: Tokens.type-caption-size;
-                font-weight: Tokens.type-label-weight;
-                vertical-alignment: center;
-                horizontal-alignment: center;
+        // Transform, Filters and, for a source with sound, Audio, then Source (ADR-0062, ADR-0076, ADR-0077).
+        if data.picture || has-source: Tabs {
+            label: @tr("Properties of {}", data.name);
+            options: is-text ? [@tr("Text"), @tr("Transform"), @tr("Filters")]
+                : is-browser ? (data.audio ? [@tr("Page"), @tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Page"), @tr("Transform"), @tr("Filters")])
+                : has-source
+                ? (data.picture
+                    ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
+                    : [@tr("Audio"), @tr("Source")])
+                : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
+            index: is-text ? (tab == 4 ? 0 : tab + 1) : is-browser ? (tab == 5 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
+            selected(i) => {
+                if is-text { Studio.properties-tab = i == 0 ? 4 : i - 1; }
+                else if is-browser { Studio.properties-tab = i == 0 ? 5 : i - 1; }
+                else if has-source && i == before-source { Studio.properties-tab = 3; }
+                else if data.picture { Studio.properties-tab = i; }
+                else { Studio.properties-tab = 2; }
             }
         }
-        Text {
-            horizontal-stretch: 1;
-            text: @tr("Changes here show in the program at once.");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-    if tab == 3: SourceFields { data: data; }
-    if tab == 4: TextFields { data: data; }
-    if tab == 5: BrowserFields { name: data.name; }
-    // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
-    // vertical canvas's own layout changes only that canvas.
-    if tab == 0 && Studio.props-can-vertical: SegmentedControl {
-        label: @tr("Canvas of {}", data.name);
-        options: [@tr("Main"), @tr("Vertical")];
-        index: Studio.props-vertical ? 1 : 0;
-        selected(i) => { Studio.set-props-vertical(i == 1); }
-    }
-    if tab == 0 && Studio.props-vertical: Text {
-        text: @tr("Changes here apply to the vertical canvas only.");
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        wrap: word-wrap;
-    }
-    if tab == 0: TransformFields { data: data; }
-    if tab == 1: FiltersFields { data: data; }
-    if tab == 2: AudioFields { data: data; }
-    if data.picture: Section {
-        title: @tr("Timed show");
-        id: "properties.timed-show";
-        hint: @tr("Hide with the hourglass in Sources if you need to, or press Show now here. It appears for the duration and hides again without Undo. Leave Show duration at 0 and use the eye in Sources for a lasting show.");
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            NumberField {
-                live: false;
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                label: @tr("Show duration of {} in milliseconds", data.name);
-                unit: @tr("ms");
-                value: data.show-for-ms;
-                edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
+        // Search: a section whose name answers opens and is scrolled to (this tab).
+        if Experience.advanced && (data.picture || has-source): search-row := Rectangle {
+            height: search-field.height;
+            search-field := TextField {
+                width: parent.width;
+                end-inset: Studio.props-query != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px;
+                label: @tr("Search these properties");
+                placeholder: @tr("Search these properties");
+                text <=> Studio.props-query;
+                edited(t) => { Studio.props-found-y = 100000px; Studio.props-query = t; }
+            }
+            if Studio.props-query != "": IconButton {
+                x: parent.width - self.width - Tokens.space-1;
+                y: (parent.height - self.height) / 2;
+                icon: IconName.close;
+                name: @tr("Clear the search");
+                clicked => { Studio.props-query = ""; search-field.focus(); }
             }
         }
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            Button {
-                lead: IconName.eye;
-                text: @tr("Show now");
-                kind: "primary";
-                dense: true;
-                enabled: data.show-for-ms > 0 && !data.visible;
-                clicked => { Studio.show-item(data.item-id); }
-            }
-            Button {
-                lead: IconName.eraser;
-                text: @tr("Clear");
-                dense: true;
-                enabled: data.show-for-ms > 0;
-                clicked => { Studio.set-item-show-for(data.item-id, 0); }
-            }
-        }
-        if data.cue-remaining-ms > 0: Text {
-            text: @tr("{} left on Program", Studio.cue-left-text(data.cue-remaining-ms));
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            wrap: word-wrap;
-        }
     }
-    // Global sources (ADR-0065): on, the source is shown and heard in every scene.
-    // Custom glide (ADR-0100): only for a picture source with more than one place.
-    Section {
-        title: @tr("Scenes");
-        id: "properties.scenes";
-        hint: data.global
-            ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
-            : @tr("It then leaves the scenes that have it and is drawn above every scene.");
-        Toggle {
-            text: @tr("Show in every scene");
-            label: @tr("Show {} in every scene", data.name);
-            checked: data.global;
-            toggled(on) => { Studio.set-global(data.id, on); }
+    props := ScrollArea {
+        vertical-stretch: 1;
+        content-height: list.preferred-height;
+        // A list that can pan holds a press briefly, so a quick click on a confirm
+        // button never arrives and the next one does. The wheel still scrolls.
+        drag-pan: false;
+        property <int> anchor: Studio.look-anchor-serial;
+        // The gear's section has just reported its place: move it on screen.
+        changed anchor => {
+            if anchor <= 0 { return; }
+            let margin = Tokens.space-2;
+            let y = Studio.look-anchor-y - list.absolute-position.y;
+            let h = Tokens.size-control-lg * 4;
+            props.scroll-into-view(y - margin, h + 2 * margin);
         }
-        if data.picture && data.places > 1: VerticalLayout {
-            spacing: Tokens.size-field-gap;
-            Toggle {
-                text: @tr("Custom glide");
-                label: @tr("Custom glide for {}", data.name);
-                checked: data.custom-glide;
-                toggled(on) => {
-                    Studio.set-source-glide(
-                        data.id,
-                        on,
-                        on ? (data.custom-glide ? data.glide-duration : Studio.glide-duration) : 0,
-                        on ? (data.custom-glide ? data.glide-easing : Studio.glide-easing) : 0
-                    );
-                }
-            }
-            if data.custom-glide: Field {
-                label: @tr("Duration");
-                NumberField {
-                    live: false;
-                    label: @tr("Glide duration of {} in milliseconds", data.name);
-                    unit: @tr("ms");
-                    value: data.glide-duration;
-                    edited(v) => {
-                        Studio.set-source-glide(data.id, true, max(0, min(5000, round(v))), data.glide-easing);
+        list := VerticalLayout {
+            padding: Tokens.size-panel-pad;
+            padding-top: Tokens.size-field-gap;
+            max-width: (tab == 0 && root.two-columns ? 2 * Tokens.size-props-column-max + Tokens.size-section-gap : Tokens.size-props-column-max) + 2 * Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
+            spacing: Tokens.size-section-gap;
+            alignment: start;
+            // A media file's playback (ADR-0108 decision 10): live actions, not undo steps.
+            if data.media: MediaPlayback { data: data; live-state: root.live-state; }
+            // Filters and the sync offset belong to the source: an edit shows on air at once.
+            if live-state != 0 && (tab == 1 || tab == 2): HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                Rectangle {
+                    width: on-air.preferred-width + 2 * Tokens.space-2;
+                    height: Tokens.type-caption-line;
+                    border-radius: self.height / 2;
+                    background: Theme.state-live;
+                    on-air := Text {
+                        text: @tr("On air");
+                        color: Theme.text-on-live;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
                     }
                 }
-            }
-            if data.custom-glide: Field {
-                label: @tr("Easing");
-                SegmentedControl {
-                    label: @tr("Glide easing of {}", data.name);
-                    options: [@tr("Linear"), @tr("Ease in-out")];
-                    index: data.glide-easing;
-                    selected(i) => { Studio.set-source-glide(data.id, true, data.glide-duration, i); }
+                Text {
+                    horizontal-stretch: 1;
+                    text: @tr("Changes here show in the program at once.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
                 }
             }
+            if tab == 3: SourceFields { data: data; }
+            if tab == 4: TextFields { data: data; }
+            if tab == 5: BrowserFields { name: data.name; }
+            // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
+            // vertical canvas's own layout changes only that canvas.
+            if tab == 0 && Studio.props-can-vertical: SegmentedControl {
+                label: @tr("Canvas of {}", data.name);
+                options: [@tr("Main"), @tr("Vertical")];
+                index: Studio.props-vertical ? 1 : 0;
+                selected(i) => { Studio.set-props-vertical(i == 1); }
+            }
+            if tab == 0 && Studio.props-vertical: Text {
+                text: @tr("Changes here apply to the vertical canvas only.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+            if tab == 0: TransformFields { data: data; wide: root.two-columns; }
+            if tab == 1: FiltersFields { data: data; }
+            if tab == 2: AudioFields { data: data; }
         }
     }
-    // Separate files of a picture source (ADR-0086 step 3.5, ADR-0117): one switch, and
-    // for a still source or a media file the form once it is on.
-    if data.picture: Section {
-        title: @tr("Recording");
-        id: "properties.picture-recording";
-        hint: data.record-choice == 1
-            ? @tr("Writes this source's picture as PNG images in the recording's folder, a new image each time it changes. Video writes a video file instead. Changes apply to the next recording.")
-            : data.record-choice == 2
-            ? @tr("Writes this file's picture as a video file, its sound as a WAV file, or both, in the recording's folder. Changes apply to the next recording.")
-            : @tr("Writes this source's picture to its own video file in the recording's folder, without its filters. Up to 3 video files are written. Changes apply to the next recording.");
-        Toggle {
-            label: @tr("Record {} separately", data.name);
-            text: @tr("Record separately");
-            checked: data.record-separately;
-            toggled(v) => { Studio.set-source-record-separately(data.id, v); }
-        }
-        if data.record-separately && data.record-choice == 1: Field {
-            label: @tr("Recorded as");
-            Select {
-                label: @tr("Recorded form of {}", data.name);
-                options: [@tr("Automatic (image)"), @tr("Image"), @tr("Video")];
-                index: data.record-form;
-                selected(i) => { Studio.set-source-record-form(data.id, i); }
-            }
-        }
-        if data.record-separately && data.record-choice == 2: Field {
-            label: @tr("Recorded as");
-            Select {
-                label: @tr("Recorded feeds of {}", data.name);
-                options: [@tr("Picture and sound"), @tr("Picture"), @tr("Sound")];
-                index: data.record-form;
-                selected(i) => { Studio.set-source-record-form(data.id, i); }
-            }
-        }
-        if Studio.rec-state == 2 && data.record-separately: Text {
-            text: @tr("Applies to the next recording.");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            wrap: word-wrap;
-        }
-    }
+    SourceOptions { data: data; options-max: root.height / 3; }
 }
 
 // The selected source's properties (mockup E): its icon, name and type, its name as a
@@ -4974,33 +4918,18 @@ export component PropertiesPanel inherits Rectangle {
         title: @tr("Nothing selected");
         message: @tr("Select a source in the Sources panel to see its properties.");
     }
-    if any: props := ScrollArea {
+    // The source's own header, tabs, scrolling body and options fill the panel.
+    if any: Rectangle {
         width: parent.width;
         height: parent.height;
-        content-height: list.preferred-height;
-        // A list that can pan holds a press briefly, so a quick click on a confirm
-        // button never arrives and the next one does. The wheel still scrolls.
-        drag-pan: false;
-        property <int> anchor: Studio.look-anchor-serial;
-        // The gear's section has just reported its place: move it on screen.
-        changed anchor => {
-            if anchor <= 0 { return; }
-            let margin = Tokens.space-2;
-            let y = Studio.look-anchor-y - list.absolute-position.y;
-            let h = Tokens.size-control-lg * 4;
-            props.scroll-into-view(y - margin, h + 2 * margin);
-        }
-        list := VerticalLayout {
-            padding: Tokens.size-panel-pad;
-            // The bar sits in the trailing padding, so both sides look alike.
-            padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
-            alignment: start;
-            for s in Studio.sources: VerticalLayout {
-                spacing: Tokens.size-section-gap;
-                if s.id == Studio.properties-source: SourceProperties {
-                    data: s;
-                    live-state: root.live-state;
-                }
+        for s in Studio.sources: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            if s.id == Studio.properties-source: SourceProperties {
+                width: parent.width;
+                height: parent.height;
+                data: s;
+                live-state: root.live-state;
             }
         }
     }

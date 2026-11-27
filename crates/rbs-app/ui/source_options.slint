@@ -1,0 +1,252 @@
+// The options every source has (Show in every scene, Record separately, Timed show,
+// Custom glide), pinned under the Properties body so they sit in the same place for
+// every source and kind. Closed, it is one line that says what is on. The level
+// decides what it lists: Simple only the scene switch, Standard adds recording and
+// the timed show, Pro adds the custom glide (ADR-0113).
+import { Theme, Tokens } from "tokens.slint";
+import { Button, IconButton, NumberField, ScrollArea, InfoHint, SegmentedControl, Select, Toggle, CaptionField as Field } from "components.slint";
+import { SourceData, Studio, Sections, Experience, IconName } from "base/types.slint";
+
+// One option: its name, a line saying what it does and an info hint on the left, its
+// control at the right edge. Unlike a settings row it never stacks the control under
+// the name, so a switch keeps its place in a narrow panel.
+component OptionRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> summary;
+    in property <string> hint;
+    // A line under the summary that says something now ("Applies to the next recording").
+    in property <string> help;
+    spacing: Tokens.space-2;
+    min-height: Tokens.size-control-lg;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        padding-top: Tokens.space-1;
+        padding-bottom: Tokens.space-1;
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.hint != "": VerticalLayout {
+                alignment: center;
+                InfoHint { label: root.label; text: root.hint; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.summary != "": Text {
+            text: root.summary;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            overflow: elide;
+        }
+        if root.help != "": Text {
+            text: root.help;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        @children
+    }
+}
+
+export component SourceOptions inherits Rectangle {
+    in property <SourceData> data;
+    // The most height the opened options take; they scroll past it.
+    in property <length> options-max;
+    property <bool> closed: Sections.closed("properties.options", Sections.rev);
+    property <bool> timed: data.picture && Experience.advanced;
+    property <bool> recording: data.picture && Experience.advanced;
+    property <bool> glide: data.picture && data.places > 1 && Experience.expert;
+    // What is on, in a few words, for the closed line.
+    property <string> s-scene: data.global ? @tr("Every scene") : "";
+    property <string> s-record: root.recording && data.record-separately ? @tr("Separate file") : "";
+    property <string> s-timed: root.timed && data.show-for-ms > 0 ? @tr("Timed {} ms", data.show-for-ms) : "";
+    property <string> s-first: root.s-scene + (root.s-scene != "" && root.s-record != "" ? " · " : "") + root.s-record;
+    property <string> summary: root.s-first + (root.s-first != "" && root.s-timed != "" ? " · " : "") + root.s-timed;
+    property <length> head-height: Tokens.size-control-lg;
+    property <length> body-height: root.closed ? 0px : min(body.preferred-height, max(0px, root.options-max - root.head-height));
+    preferred-height: root.head-height + root.body-height + Tokens.size-border;
+    background: Theme.surface-raised;
+    Rectangle {
+        y: 0px;
+        width: parent.width;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    VerticalLayout {
+        padding-top: Tokens.size-border;
+        Rectangle {
+            height: root.head-height;
+            HorizontalLayout {
+                padding-left: Tokens.size-panel-pad;
+                padding-right: Tokens.size-panel-pad;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Source options");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.closed ? (root.summary == "" ? @tr("Nothing on") : root.summary) : "";
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: root.closed ? IconName.chevron-up : IconName.chevron-down;
+                        name: root.closed ? @tr("Show source options") : @tr("Hide source options");
+                        accessible-expanded: !root.closed;
+                        clicked => { Sections.set-closed("properties.options", !root.closed); }
+                    }
+                }
+            }
+        }
+        ScrollArea {
+            visible: !root.closed;
+            height: root.body-height;
+            content-height: body.preferred-height;
+            drag-pan: false;
+            body := VerticalLayout {
+                padding-left: Tokens.size-panel-pad;
+                padding-right: max(0px, Tokens.size-panel-pad - Tokens.size-scrollbar-hit);
+                padding-bottom: Tokens.size-panel-pad;
+                alignment: start;
+                // Global sources (ADR-0065): on, the source is shown and heard in every scene.
+                OptionRow {
+                    label: @tr("Show in every scene");
+                    summary: @tr("One copy, drawn above every scene");
+                    hint: data.global
+                        ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
+                        : @tr("It then leaves the scenes that have it and is drawn above every scene.");
+                    Toggle {
+                        label: @tr("Show {} in every scene", data.name);
+                        checked: data.global;
+                        toggled(on) => { Studio.set-global(data.id, on); }
+                    }
+                }
+                // Separate files of a picture source (ADR-0086 step 3.5, ADR-0117).
+                if root.recording: OptionRow {
+                    label: @tr("Record separately");
+                    summary: @tr("Its own file in the recording's folder");
+                    hint: data.record-choice == 1
+                        ? @tr("Writes this source's picture as PNG images in the recording's folder, a new image each time it changes. Video writes a video file instead. Changes apply to the next recording.")
+                        : data.record-choice == 2
+                        ? @tr("Writes this file's picture as a video file, its sound as a WAV file, or both, in the recording's folder. Changes apply to the next recording.")
+                        : @tr("Writes this source's picture to its own video file in the recording's folder, without its filters. Up to 3 video files are written. Changes apply to the next recording.");
+                    help: Studio.rec-state == 2 && data.record-separately ? @tr("Applies to the next recording.") : "";
+                    Toggle {
+                        label: @tr("Record {} separately", data.name);
+                        checked: data.record-separately;
+                        toggled(v) => { Studio.set-source-record-separately(data.id, v); }
+                    }
+                }
+                if root.recording && data.record-separately && data.record-choice == 1: Field {
+                    label: @tr("Recorded as");
+                    Select {
+                        label: @tr("Recorded form of {}", data.name);
+                        options: [@tr("Automatic (image)"), @tr("Image"), @tr("Video")];
+                        index: data.record-form;
+                        selected(i) => { Studio.set-source-record-form(data.id, i); }
+                    }
+                }
+                if root.recording && data.record-separately && data.record-choice == 2: Field {
+                    label: @tr("Recorded as");
+                    Select {
+                        label: @tr("Recorded feeds of {}", data.name);
+                        options: [@tr("Picture and sound"), @tr("Picture"), @tr("Sound")];
+                        index: data.record-form;
+                        selected(i) => { Studio.set-source-record-form(data.id, i); }
+                    }
+                }
+                // Timed show (ADR-0105): a duration, then Show now. Live, not undone.
+                if root.timed: OptionRow {
+                    label: @tr("Timed show");
+                    summary: data.cue-remaining-ms > 0 ? @tr("{} left on Program", Studio.cue-left-text(data.cue-remaining-ms)) : @tr("Shows for a set time, then hides");
+                    hint: @tr("Hide with the hourglass in Sources if you need to, or press Show now here. It appears for the duration and hides again without Undo. Leave Show duration at 0 and use the eye in Sources for a lasting show.");
+                    NumberField {
+                        preferred-width: Tokens.size-control-lg * 3;
+                        live: false;
+                        label: @tr("Show duration of {} in milliseconds", data.name);
+                        unit: @tr("ms");
+                        value: data.show-for-ms;
+                        edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
+                    }
+                }
+                if root.timed: HorizontalLayout {
+                    spacing: Tokens.size-field-gap;
+                    Button {
+                        lead: IconName.eye;
+                        text: @tr("Show now");
+                        kind: "primary";
+                        dense: true;
+                        enabled: data.show-for-ms > 0 && !data.visible;
+                        clicked => { Studio.show-item(data.item-id); }
+                    }
+                    Button {
+                        lead: IconName.eraser;
+                        text: @tr("Clear");
+                        dense: true;
+                        enabled: data.show-for-ms > 0;
+                        clicked => { Studio.set-item-show-for(data.item-id, 0); }
+                    }
+                }
+                // Custom glide (ADR-0100): only for a picture source with more than one place.
+                if root.glide: OptionRow {
+                    label: @tr("Custom glide");
+                    summary: @tr("Its own move time between scenes");
+                    Toggle {
+                        label: @tr("Custom glide for {}", data.name);
+                        checked: data.custom-glide;
+                        toggled(on) => {
+                            Studio.set-source-glide(
+                                data.id,
+                                on,
+                                on ? (data.custom-glide ? data.glide-duration : Studio.glide-duration) : 0,
+                                on ? (data.custom-glide ? data.glide-easing : Studio.glide-easing) : 0
+                            );
+                        }
+                    }
+                }
+                if root.glide && data.custom-glide: Field {
+                    label: @tr("Duration");
+                    NumberField {
+                        live: false;
+                        label: @tr("Glide duration of {} in milliseconds", data.name);
+                        unit: @tr("ms");
+                        value: data.glide-duration;
+                        edited(v) => {
+                            Studio.set-source-glide(data.id, true, max(0, min(5000, round(v))), data.glide-easing);
+                        }
+                    }
+                }
+                if root.glide && data.custom-glide: Field {
+                    label: @tr("Easing");
+                    SegmentedControl {
+                        label: @tr("Glide easing of {}", data.name);
+                        options: [@tr("Linear"), @tr("Ease in-out")];
+                        index: data.glide-easing;
+                        selected(i) => { Studio.set-source-glide(data.id, true, data.glide-duration, i); }
+                    }
+                }
+            }
+        }
+    }
+}

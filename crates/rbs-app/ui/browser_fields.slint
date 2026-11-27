@@ -21,6 +21,15 @@ export component Section inherits VerticalLayout {
     in property <string> default-text;
     callback reset();
     property <bool> closed: Sections.closed(root.id, Sections.rev);
+    // The Properties search (the field above the body): a section whose title answers
+    // it opens and reports its place; the topmost one is scrolled to.
+    property <string> query: Studio.props-query;
+    changed query => {
+        if root.id != "" && Sections.props-matches(root.title, root.query) {
+            Sections.set-closed(root.id, false);
+            Studio.props-found(root.absolute-position.y);
+        }
+    }
     spacing: Tokens.size-field-gap;
     HorizontalLayout {
         spacing: Tokens.size-field-gap;

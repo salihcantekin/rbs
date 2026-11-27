@@ -308,6 +308,8 @@ export global Sections {
     callback set-group(string /* prefix */, bool /* closed */);
     // The same for a list of section ids, comma separated (the sections Properties
     // draws now): 0 none, 1 some are open, 2 all are closed.
+    // Does a section called so answer the search text? Rust asks `section_keys::matches`.
+    pure callback props-matches(string /* title */, string /* query */) -> bool;
     pure callback list-state(string /* ids */, int /* rev */) -> int;
     callback set-list(string /* ids */, bool /* closed */);
 }
@@ -1930,6 +1932,21 @@ export global Studio {
     // The ids of the sections Properties draws now, comma separated: the panel's title
     // row folds them all with one button (Collapse all / Expand all).
     in-out property <string> properties-folds;
+    // Properties: W and H change together (the proportions kept), and the text the
+    // search field above the body holds.
+    in-out property <bool> props-aspect;
+    in-out property <string> props-query;
+    // The topmost section that answers the search reports its place: `props-found(y)`
+    // keeps the smallest `y` since the query changed (the field sets `props-found-y`
+    // high first) and asks Properties to scroll to it.
+    in-out property <length> props-found-y;
+    public function props-found(y: length) {
+        if y < props-found-y {
+            props-found-y = y;
+            look-anchor-y = y;
+            look-anchor-serial += 1;
+        }
+    }
     callback select-filter(int /* source */, int /* filter */);
     callback remove-filter(int /* filter */);
     callback move-filter(int /* filter */, int /* index */);

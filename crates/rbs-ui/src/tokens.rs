@@ -122,6 +122,8 @@ pub const LENGTHS: &[&str] = &[
     "size.menu.sm",
     "size.menu.md",
     "size.row.stack-below",
+    "size.props.column-min",
+    "size.props.column-max",
     "size.row.picture.sm",
     "size.row.picture.md",
     "size.row.picture.lg",

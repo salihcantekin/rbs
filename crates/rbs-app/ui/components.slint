@@ -5538,17 +5538,39 @@ export component FeatureSection inherits VerticalLayout {
     out property <bool> show-all: root.shown-here || (root.id != "" && Experience.shown(root.id, Experience.rev));
     in property <bool> has-toggle: true;
     in-out property <bool> on: true;
+    // What the section holds in a few words ("#f31aff · 9, 15, 4"), read beside the
+    // title while the section is closed, so its values show without opening it.
+    in property <string> summary;
     callback toggled(bool);
     property <bool> closed: Sections.closed(root.id, Sections.rev);
+    // The Properties search: see `Section`.
+    property <string> query: Studio.props-query;
+    changed query => {
+        if root.id != "" && Sections.props-matches(root.title, root.query) {
+            Sections.set-closed(root.id, false);
+            Studio.props-found(root.absolute-position.y);
+        }
+    }
     spacing: Tokens.size-field-gap;
     HorizontalLayout {
         spacing: Tokens.space-2;
         Rectangle {
             horizontal-stretch: 1;
             min-height: Tokens.size-control-md;
-            Text {
+            if root.closed && root.summary != "": Text {
+                x: min(title-text.preferred-width, parent.width) + Tokens.space-2;
+                width: max(0px, parent.width - self.x);
+                height: parent.height;
+                text: root.summary;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+            title-text := Text {
                 x: 0;
-                width: parent.width;
+                width: root.closed && root.summary != "" ? min(self.preferred-width, parent.width) : parent.width;
                 height: parent.height;
                 text: root.title;
                 color: root.has-toggle && !root.on ? Theme.text-secondary : Theme.text-primary;
@@ -5584,8 +5606,18 @@ export component FeatureSection inherits VerticalLayout {
     Rectangle {
         visible: !root.closed;
         height: root.closed ? 0px : inner.preferred-height;
-        min-width: root.closed ? 0px : inner.min-width;
+        min-width: root.closed ? 0px : inner.min-width + Tokens.space-1 + Tokens.space-3;
+        // The body is set in from the title with a guide line, so what belongs to
+        // the section reads as inside it.
+        Rectangle {
+            x: Tokens.space-1;
+            width: Tokens.size-border;
+            height: parent.height;
+            background: Theme.border-subtle;
+        }
         inner := VerticalLayout {
+            x: Tokens.space-1 + Tokens.space-3;
+            width: parent.width - self.x;
             spacing: Tokens.size-field-gap;
             @children
             if root.more-hidden && !root.show-all: MoreHidden {
