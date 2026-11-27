@@ -667,7 +667,7 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
-### Protocol 1.111: defer nested scenes (ADR-0188)
+### Protocol 1.111: scenes cannot contain scenes (ADR-0188)
 
 The owner approved this behavioural change for older clients as an exception
 to P9 and the major-version rule. A server before 1.111 retains its own scene
@@ -849,7 +849,7 @@ contract is implemented.
   `method_not_found` remains the response to a new method not known by a
   server, but 1.111 adds no methods.
 
-> The group Properties and nested-scene deferral work was drafted as protocol 1.108 and 1.109 (the numbers the ADRs use). It shipped together as **1.111**, because 1.108 to 1.110 went to the typed catalog (ADR-0196).
+> The group Properties and nested-scene removal work was drafted as protocol 1.108 and 1.109 (the numbers the ADRs use). It shipped together as **1.111**, because 1.108 to 1.110 went to the typed catalog (ADR-0196).
 
 ### Protocol 1.111: group Properties (ADR-0184, ADR-0185)
 
@@ -858,7 +858,7 @@ the group API, scene, document, compositor and UI contracts). The group
 Properties operations do not change `item.*`. The ADR-0186 exceptions below
 also change existing group and companion-add commands for older clients.
 ADR-0187 changes run identity; its session-only settings generation is not a
-public run id. The nested-scene deferral (ADR-0188) replaces the nested-scene portions of
+public run id. The nested-scene removal (ADR-0188) replaces the nested-scene portions of
 this contract.
 **As built (2026-11-25).** The studio, not the host, issues settings
 generations and run ids; a collection switch retires them and a failed switch

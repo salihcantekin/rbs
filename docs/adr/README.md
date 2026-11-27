@@ -195,7 +195,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0185](0185-scroll-a-group-as-one-picture.md) | Scroll a group as one picture | Accepted (decision 1 superseded in part by ADR-0188; decision 3 superseded in part by ADR-0187; decision 5 superseded in part by ADR-0193) |
 | [0186](0186-do-not-regroup-grouped-items.md) | Do not regroup items already in a group | Accepted |
 | [0187](0187-version-group-scroll-settings.md) | Version group Scroll settings for run identity | Accepted |
-| [0188](0188-defer-new-nested-scenes.md) | Defer new nested scenes | Accepted |
+| [0188](0188-defer-new-nested-scenes.md) | Scenes cannot contain scenes | Accepted |
 | [0189](0189-address-source-placements.md) | Address source placements independently | Proposed |
 | [0190](0190-prepare-group-resources-on-executors.md) | Prepare group resources on their owning executor | Superseded by ADR-0193 |
 | [0191](0191-incremental-node-release-for-quiesce.md) | Bounded control-thread service and quiesce | Superseded by ADR-0193 |
