@@ -320,6 +320,214 @@
 			"Controllers": [
 				"Encoder"
 			]
+		},
+		{
+			"Name": "Replay buffer",
+			"UUID": "com.rbs.streamdeck.replay-buffer",
+			"Icon": "imgs/replay-buffer",
+			"Tooltip": "Turn the replay buffer on or off.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Off",
+					"Image": "imgs/replay-buffer-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "On",
+					"Image": "imgs/replay-buffer-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Scene collection",
+			"UUID": "com.rbs.streamdeck.collection",
+			"Icon": "imgs/collection",
+			"Tooltip": "Switch to a scene collection.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Other",
+					"Image": "imgs/collection-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "In use",
+					"Image": "imgs/collection-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Profile",
+			"UUID": "com.rbs.streamdeck.profile",
+			"Icon": "imgs/profile",
+			"Tooltip": "Switch to an output profile.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Other",
+					"Image": "imgs/profile-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "In use",
+					"Image": "imgs/profile-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Preview scene",
+			"UUID": "com.rbs.streamdeck.preview",
+			"Icon": "imgs/preview",
+			"Tooltip": "Put a scene on the preview (studio mode).",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/preview-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Status",
+			"UUID": "com.rbs.streamdeck.status",
+			"Icon": "imgs/status",
+			"Tooltip": "Shows the recording time and the stream status.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/status-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Record and stream",
+			"UUID": "com.rbs.streamdeck.go-live",
+			"Icon": "imgs/go-live",
+			"Tooltip": "Start or stop the recording and the stream together.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Off",
+					"Image": "imgs/go-live-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "On",
+					"Image": "imgs/go-live-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Filter",
+			"UUID": "com.rbs.streamdeck.filter",
+			"Icon": "imgs/filter",
+			"Tooltip": "Turn a source filter, such as background removal, on or off.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "On",
+					"Image": "imgs/filter-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Off",
+					"Image": "imgs/filter-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Track mute",
+			"UUID": "com.rbs.streamdeck.bus-mute",
+			"Icon": "imgs/bus-mute",
+			"Tooltip": "Mute or unmute an audio track.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Sound",
+					"Image": "imgs/bus-mute-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Muted",
+					"Image": "imgs/bus-mute-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Track volume dial",
+			"UUID": "com.rbs.streamdeck.bus-volume",
+			"Icon": "imgs/bus-volume",
+			"Tooltip": "Turn to change an audio track's volume, press to mute.",
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/bus-volume-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Volume",
+					"Push": "Mute"
+				}
+			},
+			"Controllers": [
+				"Encoder"
+			]
 		}
 	]
 }

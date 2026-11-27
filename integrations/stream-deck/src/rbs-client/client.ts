@@ -38,9 +38,25 @@ export interface RbsState {
 	replay?: ReplayData;
 	vcam?: VcamData;
 	profiles?: ProfileData;
+	/** The audio buses (the `bus.list` answer); absent on a server without them. */
+	buses?: { buses: { name: string; volume: number; muted: boolean }[] };
+	/** The scene collections and output profiles of the user's libraries, and the ones in use. */
+	collections?: Library;
+	profileLibrary?: Library;
 }
 
-export type StateKey = "scenes" | "sources" | "record" | "stream" | "replay" | "vcam";
+/** An answer is kept only when it has the expected list (an older server may answer something else). */
+const asLibrary = (v: unknown): Library | undefined => (Array.isArray((v as Library | undefined)?.entries) ? (v as Library) : undefined);
+const asBuses = (v: unknown): RbsState["buses"] => (Array.isArray((v as RbsState["buses"])?.buses) ? (v as RbsState["buses"]) : undefined);
+
+/** A `collection.list` or `profile.list` answer. */
+export interface Library {
+	entries: { id: string; name: string }[];
+	current: string;
+	pending?: boolean;
+}
+
+export type StateKey = "scenes" | "sources" | "record" | "stream" | "replay" | "vcam" | "buses";
 
 const TOPICS: Record<string, StateKey> = {
 	"scene.changed": "scenes",
@@ -49,7 +65,11 @@ const TOPICS: Record<string, StateKey> = {
 	"stream.state": "stream",
 	"replay.changed": "replay",
 	"vcam.changed": "vcam",
+	"bus.changed": "buses",
 };
+
+/** Topics a server older than the buses may not know: subscribed on their own, a refusal is ignored. */
+const OPTIONAL_TOPICS = new Set(["bus.changed"]);
 
 const CLIENT_NAME = "rbs-stream-deck";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -112,7 +132,7 @@ export class RbsClient {
 	private current: LinkStatus = { state: "idle" };
 	private data: RbsState = {};
 	private statusListeners = new Set<(s: LinkStatus) => void>();
-	private stateListeners = new Set<(s: RbsState, changed: StateKey | "profiles") => void>();
+	private stateListeners = new Set<(s: RbsState, changed: StateKey | "profiles" | "libraries") => void>();
 
 	constructor(options: ClientOptions = {}) {
 		this.clock = options.clock ?? systemClock;
@@ -138,7 +158,7 @@ export class RbsClient {
 		return () => void this.statusListeners.delete(fn);
 	}
 
-	onState(fn: (s: RbsState, changed: StateKey | "profiles") => void): () => void {
+	onState(fn: (s: RbsState, changed: StateKey | "profiles" | "libraries") => void): () => void {
 		this.stateListeners.add(fn);
 		return () => void this.stateListeners.delete(fn);
 	}
@@ -179,6 +199,17 @@ export class RbsClient {
 	call<M extends keyof Methods>(method: M, params?: Methods[M]["params"]): Promise<Methods[M]["result"]> {
 		if (this.current.state !== "ready") return Promise.reject(new LinkError("not_ready", "not connected to RBS"));
 		return this.rpc(method, params) as Promise<Methods[M]["result"]>;
+	}
+
+	/** Reads the collection and profile lists again (after a switch, or when a collection restarted the studio). */
+	async refreshLibraries(): Promise<void> {
+		if (this.current.state !== "ready") return;
+		const [collections, profileLibrary] = await Promise.all([
+			this.rpc("collection.list", {}).catch(() => undefined),
+			this.rpc("profile.list", {}).catch(() => undefined),
+		]);
+		this.data = { ...this.data, collections: asLibrary(collections) ?? this.data.collections, profileLibrary: asLibrary(profileLibrary) ?? this.data.profileLibrary };
+		for (const fn of [...this.stateListeners]) fn(this.data, "libraries");
 	}
 
 	// ---- internals -------------------------------------------------------------------
@@ -257,9 +288,10 @@ export class RbsClient {
 				server: { name: string; version: string };
 			};
 			if (gen !== this.generation) return;
-			await this.rpc("events.subscribe", { topics: Object.keys(TOPICS) as never });
+			await this.rpc("events.subscribe", { topics: Object.keys(TOPICS).filter((t) => !OPTIONAL_TOPICS.has(t)) as never });
+			await this.rpc("events.subscribe", { topics: [...OPTIONAL_TOPICS] as never }).catch((e) => (e instanceof RbsError ? undefined : Promise.reject(e)));
 			// Replay buffer and virtual camera are optional: an older server may lack them.
-			const optional = (method: "replay.status" | "vcam.status") => this.rpc(method, {}).catch((e) => (e instanceof RbsError ? undefined : Promise.reject(e)));
+			const optional = (method: "replay.status" | "vcam.status" | "bus.list" | "collection.list" | "profile.list") => this.rpc(method, {}).catch((e) => (e instanceof RbsError ? undefined : Promise.reject(e)));
 			const [scenes, sources, record, stream, profiles, replay, vcam] = await Promise.all([
 				this.rpc("scene.list", {}),
 				this.rpc("source.list", {}),
@@ -269,6 +301,8 @@ export class RbsClient {
 				optional("replay.status"),
 				optional("vcam.status"),
 			]);
+			// At most 8 requests are in flight: the rest of the optional lists go second.
+			const [buses, collections, profileLibrary] = await Promise.all([optional("bus.list"), optional("collection.list"), optional("profile.list")]);
 			if (gen !== this.generation) return;
 			this.applySnapshot("scenes", scenes as never);
 			this.applySnapshot("sources", sources as never);
@@ -276,7 +310,8 @@ export class RbsClient {
 			this.applySnapshot("stream", stream as never);
 			if (replay) this.applySnapshot("replay", replay as never);
 			if (vcam) this.applySnapshot("vcam", vcam as never);
-			this.data = { ...this.data, profiles: (profiles as { profiles: ProfileData }).profiles };
+			if (asBuses(buses)) this.applySnapshot("buses", { data: buses });
+			this.data = { ...this.data, profiles: (profiles as { profiles: ProfileData }).profiles, collections: asLibrary(collections), profileLibrary: asLibrary(profileLibrary) };
 			this.cancelConnectTimer?.();
 			this.cancelConnectTimer = undefined;
 			this.attempt = 0;

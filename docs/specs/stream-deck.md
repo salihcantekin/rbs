@@ -75,6 +75,14 @@ All actions are keys (`Controllers: ["Keypad"]`) except the volume dial (`Encode
 | `transition` | `canvas.transition` in studio mode; nothing outside it | none | dimmed outside studio mode |
 | `vcam` | `vcam.start` or `vcam.stop` | none | accent while sending |
 | `marker` | `marker.add` | none | dimmed while not recording |
+| `replay-buffer` | `replay.arm` / `replay.disarm` (modes on/off) | mode | accent while armed |
+| `collection`, `profile` | `collection.switch {id}` / `profile.switch {id}`; RBS refuses (`conflict`) while recording or streaming; the lists (`collection.list`, `profile.list`) are read again after a press | entry id | name; accent "In use" for the loaded one |
+| `preview` | `canvas.set_preview {scene}` while studio mode is on | scene | scene name; dimmed outside studio mode |
+| `status` | none | none | recording time and stream status ("Rec + Live", "Idle") |
+| `go-live` | start: `record.start` then `stream.start`; running: `record.stop` and `stream.stop` (modes on/off) | mode | red while either runs |
+| `filter` | `filter.set_enabled {filter, enabled}` (modes on/off); lists the filters of the sources in the scene on air, so a filter such as background removal is one of them | filter id | filter name; accent while on |
+| `bus-mute` | `bus.set {name, muted}` (modes on/off) | track name | speaker icon; dimmed while muted |
+| `bus-volume` (dial) | turn: `bus.set {name, volume}` on the fader scale; press: mute | track name, step | track name, percent, bar |
 | `volume` (dial) | turn: `source.set_volume` or `canvas.set_master_volume`, a step of 1 to 25 percent of the fader per tick (RBS's fader scale: linear in dB from -60 dB to 0 dB, the left end is silence); press: mute | source or Master, step | built-in `$B1` layout: title, percent or Muted, bar |
 | `mute` | `source.set_muted {source, muted: !muted}`, or `canvas.set_master_muted` for the target Master | target: Master or a source | speaker or crossed speaker |
 

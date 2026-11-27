@@ -181,6 +181,87 @@ describe("press", () => {
 	});
 });
 
+describe("more keys", () => {
+	const st: ViewState = {
+		scenes: { scenes: [{ id: 1, name: "Main" }, { id: 2, name: "Chat" }], program: 1, preview: 1 },
+		sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: true }] }],
+		record: { state: "idle" },
+		stream: { state: "idle" },
+		replay: { armed: false },
+		buses: { buses: [{ name: "Music", volume: 0.5, muted: false }] },
+		collections: { entries: [{ id: "a", name: "Show" }, { id: "b", name: "Talk" }], current: "a" },
+		profileLibrary: { entries: [{ id: "p", name: "Stream" }], current: "p" },
+	};
+	const c = { elapsed: { ms: 0, at: 0, running: false }, liveSince: 0, now: 0, titled: false };
+	it("looks", () => {
+		expect(look("collection", { entry: "a" }, st, c)).toMatchObject({ label: "Show", tone: "accent", sub: "In use" });
+		expect(look("collection", { entry: "b" }, st, c)).toMatchObject({ label: "Talk", tone: "neutral" });
+		expect(look("collection", { entry: "zz" }, st, c).sub).toBe("Not found");
+		expect(look("profile", {}, st, c).sub).toBe("Choose one");
+		expect(look("preview", { scene: "2" }, st, c)).toMatchObject({ label: "Chat", sub: "Preview", tone: "neutral" });
+		expect(look("preview", { scene: "2" }, { ...st, scenes: { ...st.scenes!, preview: undefined } }, c)).toMatchObject({ sub: "Studio off", tone: "dim" });
+		expect(look("filter", { filter: "31" }, st, c)).toMatchObject({ label: "background removal", tone: "accent", sub: undefined });
+		expect(look("filter", { filter: "99" }, st, c).sub).toBe("Not in scene");
+		expect(look("replay-buffer", {}, st, c).label).toBe("Replay off");
+		expect(look("bus-mute", { bus: "Music" }, st, c)).toMatchObject({ label: "Music", tone: "neutral" });
+		expect(look("status", {}, st, c)).toMatchObject({ label: "Idle", tone: "dim" });
+		expect(look("status", {}, { ...st, record: { state: "recording" }, stream: { state: "live", connected: true } }, c).label).toBe("Rec + Live");
+		expect(look("go-live", {}, st, c).label).toBe("Go live");
+		expect(look("go-live", {}, { ...st, stream: { state: "live" } }, c).label).toBe("End all");
+	});
+	it("two-state indexes and one-job dimming", () => {
+		expect(stateIndex("collection", { entry: "a" }, st)).toBe(1);
+		expect(stateIndex("replay-buffer", {}, st)).toBe(0);
+		expect(stateIndex("filter", { filter: "31" }, st)).toBe(0);
+		expect(stateIndex("bus-mute", { bus: "Music" }, st)).toBe(0);
+		expect(jobDone("replay-buffer", {}, st, "off")).toBe(true);
+		expect(jobDone("filter", { filter: "31" }, st, "on")).toBe(true);
+		expect(jobDone("go-live", {}, st, "off")).toBe(true);
+		expect(jobDone("bus-mute", { bus: "Music" }, st, "on")).toBe(false);
+		expect(look("filter", { filter: "31", mode: "on" }, st, c).tone).toBe("dim");
+	});
+	it("reads a track dial", () => {
+		expect(dialView("bus-volume", { bus: "Music" }, st)).toMatchObject({ title: "Music", volume: 0.5, muted: false });
+		expect(dialView("bus-volume", { bus: "Nope" }, st).volume).toBeUndefined();
+	});
+});
+
+describe("presses of the more keys", () => {
+	it("send the calls", async () => {
+		const server = await FakeServer.start();
+		server.options.answers["source.list"] = { seq: { "source.changed": 1 }, data: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "x", enabled: true }] }] };
+		server.options.answers["replay.status"] = { seq: { "replay.changed": 1 }, data: { armed: false } };
+		server.options.answers["bus.list"] = { buses: [{ name: "Music", volume: 0.5, muted: false }] };
+		server.options.answers["collection.list"] = { entries: [{ id: "a", name: "Show" }, { id: "b", name: "Talk" }], current: "a", pending: false };
+		server.options.answers["profile.list"] = { entries: [{ id: "p1", name: "High" }], current: "p1", pending: false };
+		const client = new RbsClient({ clock: new ManualClock() });
+		client.configure(server.port, "rbs1_good");
+		client.start();
+		await new Promise<void>((r) => client.onStatus((s) => s.state === "ready" && r()));
+		const last = () => server.requests.slice(-1)[0];
+		await press("replay-buffer", {}, client);
+		expect(last()?.method).toBe("replay.arm");
+		await press("collection", { entry: "b" }, client);
+		expect(last()?.method).toBe("collection.switch");
+		expect(last()?.params).toEqual({ id: "b" });
+		const n = server.requests.length;
+		await press("collection", { entry: "a" }, client); // in use: nothing
+		expect(server.requests.length).toBe(n);
+		await press("filter", { filter: "31" }, client);
+		expect(last()).toEqual({ method: "filter.set_enabled", params: { filter: 31, enabled: false } });
+		await press("bus-mute", { bus: "Music" }, client);
+		expect(last()).toEqual({ method: "bus.set", params: { name: "Music", muted: true } });
+		await turnVolume("bus-volume", { bus: "Music", step: "10" }, -1, client);
+		expect(last()?.method).toBe("bus.set");
+		await press("go-live", {}, client);
+		expect(last()?.method).toBe("stream.start");
+		expect(server.requests.some((r) => r.method === "record.start")).toBe(true);
+		await expect(press("bus-mute", {}, client)).rejects.toThrow(/Choose a track/);
+		client.stop();
+		await server.stop();
+	});
+});
+
 describe("scene steps and dials", () => {
 	const state: ViewState = {
 		scenes: { scenes: [{ id: 1, name: "A" }, { id: 2, name: "B", active: false }, { id: 3, name: "C" }], program: 3, master: { volume: 0.5 } },
@@ -194,9 +275,9 @@ describe("scene steps and dials", () => {
 		expect(stepTarget({ scenes: { scenes: [{ id: 1, name: "A" }], program: 1 } }, "next")).toBeUndefined();
 	});
 	it("reads a dial's source", () => {
-		expect(dialView({ source: "7" }, state)).toMatchObject({ title: "Mic", volume: 0.8 });
-		expect(dialView({ source: "master" }, state)).toMatchObject({ title: "Master", volume: 0.5 });
-		expect(dialView({ source: "99" }, state).volume).toBeUndefined();
+		expect(dialView("volume", { source: "7" }, state)).toMatchObject({ title: "Mic", volume: 0.8 });
+		expect(dialView("volume", { source: "master" }, state)).toMatchObject({ title: "Master", volume: 0.5 });
+		expect(dialView("volume", { source: "99" }, state).volume).toBeUndefined();
 	});
 	it("turns volume in steps and clamps", async () => {
 		const server = await FakeServer.start();
@@ -206,11 +287,11 @@ describe("scene steps and dials", () => {
 		client.start();
 		await new Promise<void>((r) => client.onStatus((st) => st.state === "ready" && r()));
 		// 0.8 is at fader position 0.968 (-1.9 dB); two steps of 10 percent down is position 0.768 (-13.9 dB)
-		await turnVolume({ source: "7", step: "10" }, -2, client);
+		await turnVolume("volume", { source: "7", step: "10" }, -2, client);
 		const sent = (server.requests.slice(-1)[0]?.params as { volume: number }).volume;
 		expect(20 * Math.log10(sent)).toBeCloseTo(-13.94, 1);
 		expect(positionOf(sent)).toBeCloseTo(0.7677, 2);
-		await turnVolume({ source: "7", step: "25" }, 5, client);
+		await turnVolume("volume", { source: "7", step: "25" }, 5, client);
 		expect(server.requests.slice(-1)[0]?.params).toEqual({ source: 7, volume: 1 });
 		client.stop();
 		await server.stop();

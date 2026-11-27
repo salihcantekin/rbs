@@ -1,7 +1,7 @@
 import { RbsError } from "./rbs-client/protocol.js";
 import type { RbsClient } from "./rbs-client/client.js";
 import { positionOf, volumeAt } from "./fader.js";
-import { type Kind, type Settings, type ViewState, modeOf, stepTarget } from "./view.js";
+import { type Kind, type Settings, type ViewState, findFilter, modeOf, stepTarget } from "./view.js";
 
 /** Why a press failed, in words for the inspector's status line. */
 export function explain(err: unknown): string {
@@ -13,6 +13,21 @@ export function explain(err: unknown): string {
 		return `RBS refused: ${err.kind}${err.reason ? ` (${err.reason})` : ""}.`;
 	}
 	return err instanceof Error ? err.message : String(err);
+}
+
+/** Starts a recording with the profile RBS has selected: the user chose it in RBS, not on the key. */
+async function startRecording(client: RbsClient): Promise<void> {
+	const current = (await client.call("profile.list", {})).current;
+	const known = client.state.profiles ?? [];
+	const profile = known.some((p) => p.id === current) ? current : known[0]?.id;
+	if (!profile) throw new Error("RBS has no recording profile.");
+	await client.call("record.start", { profile });
+}
+
+/** After a switch the lists are read again, once now and once the app has loaded the entry. */
+function refreshSoon(client: RbsClient): void {
+	void client.refreshLibraries();
+	for (const ms of [1500, 5000]) setTimeout(() => void client.refreshLibraries(), ms).unref?.();
 }
 
 /** What a press does (docs/specs/stream-deck.md, Actions). Throws when the call fails. */
@@ -30,14 +45,7 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 			const mode = modeOf(settings);
 			if ((mode === "on" && recording) || (mode === "off" && !recording)) return; // not this key's job
 			if (recording) await client.call("record.stop", {});
-			else {
-				// The profile RBS has selected: the user chose it in RBS, not on the key.
-				const current = (await client.call("profile.list", {})).current;
-				const known = client.state.profiles ?? [];
-				const profile = known.some((p) => p.id === current) ? current : known[0]?.id;
-				if (!profile) throw new Error("RBS has no recording profile.");
-				await client.call("record.start", { profile });
-			}
+			else await startRecording(client);
 			return;
 		}
 		case "studio": {
@@ -73,6 +81,68 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 			if ((mode === "on" && on) || (mode === "off" && !on)) return;
 			if (on) await client.call("vcam.stop", {});
 			else await client.call("vcam.start", {});
+			return;
+		}
+		case "replay-buffer": {
+			if (!state.replay) throw new Error("This RBS has no replay buffer.");
+			const on = state.replay.armed === true;
+			const mode = modeOf(settings);
+			if ((mode === "on" && on) || (mode === "off" && !on)) return;
+			if (on) await client.call("replay.disarm", {});
+			else await client.call("replay.arm", {});
+			return;
+		}
+		case "collection":
+		case "profile": {
+			if (!settings.entry) throw new Error("Choose one in the inspector.");
+			const lib = kind === "collection" ? state.collections : state.profileLibrary;
+			if (lib?.current === settings.entry) return;
+			// RBS refuses while recording or streaming ("conflict"), as the File menu does.
+			await client.call(kind === "collection" ? "collection.switch" : "profile.switch", { id: settings.entry });
+			refreshSoon(client);
+			return;
+		}
+		case "preview": {
+			if (state.scenes?.preview === undefined) return; // outside studio mode there is no preview
+			const scene = Number(settings.scene);
+			if (!Number.isInteger(scene)) throw new Error("Choose a scene in the inspector.");
+			await client.call("canvas.set_preview", { scene });
+			return;
+		}
+		case "status":
+			return; // shows, does nothing
+		case "go-live": {
+			const recording = state.record?.state === "recording";
+			const live = state.stream?.state === "live";
+			const mode = modeOf(settings);
+			if ((mode === "on" && (recording || live)) || (mode === "off" && !recording && !live)) return;
+			if (recording || live) {
+				if (recording) await client.call("record.stop", {});
+				if (live) await client.call("stream.stop", {});
+			} else {
+				await startRecording(client);
+				await client.call("stream.start", {});
+			}
+			return;
+		}
+		case "filter": {
+			const id = Number(settings.filter);
+			if (!Number.isInteger(id)) throw new Error("Choose a filter in the inspector.");
+			const f = findFilter(state, settings.filter);
+			if (!f) return; // not in the scene on air: its state is not known
+			const mode = modeOf(settings);
+			const want = mode === "toggle" ? !f.enabled : mode === "on";
+			if (want !== f.enabled) await client.call("filter.set_enabled", { filter: id, enabled: want });
+			return;
+		}
+		case "bus-volume": // a dial press mutes, like the mute key
+		case "bus-mute": {
+			const b = state.buses?.buses.find((x) => x.name === settings.bus);
+			if (!settings.bus) throw new Error("Choose a track in the inspector.");
+			if (!b) return;
+			const mode = modeOf(settings);
+			const want = kind === "bus-volume" || mode === "toggle" ? !b.muted : mode === "on";
+			if (want !== b.muted) await client.call("bus.set", { name: settings.bus, muted: want } as never);
 			return;
 		}
 		case "marker": {
@@ -127,9 +197,14 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 }
 
 /** A dial turn: the new volume (a linear 0 to 1 factor) for `ticks` steps of `step` percent. */
-export async function turnVolume(settings: Settings, ticks: number, client: RbsClient): Promise<void> {
+export async function turnVolume(kind: Kind, settings: Settings, ticks: number, client: RbsClient): Promise<void> {
 	const state = client.state as unknown as ViewState;
 	const step = Math.min(25, Math.max(1, Number(settings.step) || 5)) / 100;
+	if (kind === "bus-volume") {
+		const b = state.buses?.buses.find((x) => x.name === settings.bus);
+		if (b) await client.call("bus.set", { name: b.name, volume: moved(b.volume, ticks, step) } as never);
+		return;
+	}
 	if (settings.source === "master") {
 		await client.call("canvas.set_master_volume", { volume: moved(state.scenes?.master?.volume ?? 1, ticks, step) });
 		return;

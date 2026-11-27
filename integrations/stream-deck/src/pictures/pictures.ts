@@ -115,6 +115,13 @@ export const glyphs = {
 	studio: `<rect x="3" y="14" width="26" height="36" rx="6"/><rect x="35" y="14" width="26" height="36" rx="6" fill="currentColor" fill-opacity=".35"/>`,
 	transition: `<path d="M8 22h44M40 10l12 12-12 12M56 42H12M24 30L12 42l12 12"/>`,
 	warn: `<circle cx="32" cy="32" r="24"/><path d="M32 18v18M32 44v2"/>`,
+	library: `<rect x="6" y="20" width="40" height="30" rx="5"/><path d="M14 12h40a4 4 0 0 1 4 4v28"/>`,
+	profile: `<path d="M10 18h44M10 32h44M10 46h44"/><circle cx="22" cy="18" r="6" fill="currentColor"/><circle cx="42" cy="32" r="6" fill="currentColor"/><circle cx="28" cy="46" r="6" fill="currentColor"/>`,
+	preview: `<rect x="4" y="12" width="56" height="40" rx="7"/><circle cx="32" cy="32" r="9" fill="currentColor"/>`,
+	goLive: `<circle cx="32" cy="32" r="7" fill="currentColor"/><path d="M18 18a20 20 0 0 0 0 28M46 18a20 20 0 0 1 0 28"/>`,
+	info: `<circle cx="32" cy="32" r="26"/><path d="M32 28v16M32 20v2"/>`,
+	filter: `<path d="M10 54L40 24M40 12l3 7 7 3-7 3-3 7-3-7-7-3 7-3zM16 14l2 4 4 2-4 2-2 4-2-4-4-2 4-2z" fill="currentColor"/>`,
+	bus: `<path d="M16 8v48M32 8v48M48 8v48"/><rect x="10" y="34" width="12" height="8" rx="3" fill="currentColor"/><rect x="26" y="16" width="12" height="8" rx="3" fill="currentColor"/><rect x="42" y="26" width="12" height="8" rx="3" fill="currentColor"/>`,
 	volume: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M45 22c6 6 6 14 0 20"/>`,
 };
 

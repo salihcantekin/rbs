@@ -3529,6 +3529,192 @@ export namespace CanvasTransitionResult {
 	 */
 	export interface Root {}
 }
+export namespace CollectionListParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace CollectionListResult {
+	/**
+	 * The output profiles or scene collections (`profile.list`, `collection.list`;
+	 * protocol 1.4).
+	 */
+	export interface Root {
+		/**
+		 * The id of the one in use.
+		 */
+		current: string;
+		/**
+		 * Every entry, by name.
+		 */
+		entries: LibraryEntry[];
+		/**
+		 * A switch asked for through the control API is still being made. Once it is
+		 * false, a `current` other than the id asked for means the app refused the
+		 * switch or could not load the entry (its error line says why).
+		 */
+		pending: boolean;
+	}
+	/**
+	 * One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).
+	 */
+	export interface LibraryEntry {
+		/**
+		 * Its stable id, passed to `profile.switch` and `collection.switch`.
+		 */
+		id: string;
+		/**
+		 * Its name, unique in the library ignoring case.
+		 */
+		name: string;
+	}
+}
+export namespace CollectionSwitchParams {
+	/**
+	 * `profile.switch` and `collection.switch` (protocol 1.4).
+	 */
+	export interface Root {
+		/**
+		 * The entry's id (`profile.list`, `collection.list`).
+		 */
+		id: string;
+	}
+}
+export namespace CollectionSwitchResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ProfileSwitchParams {
+	/**
+	 * `profile.switch` and `collection.switch` (protocol 1.4).
+	 */
+	export interface Root {
+		/**
+		 * The entry's id (`profile.list`, `collection.list`).
+		 */
+		id: string;
+	}
+}
+export namespace ProfileSwitchResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayArmParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayArmResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayDisarmParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayDisarmResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace BusListParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace BusListResult {
+	/**
+	 * `bus.list` and topic `bus.changed`: the main canvas's buses other than `main`, in
+	 * the order they were added.
+	 */
+	export interface Root {
+		/**
+		 * The buses.
+		 */
+		buses: BusRow[];
+	}
+	/**
+	 * One bus of [`BusList`].
+	 */
+	export interface BusRow {
+		/**
+		 * Muted.
+		 */
+		muted: boolean;
+		/**
+		 * Its name, unique on the canvas, never `main`.
+		 */
+		name: string;
+		/**
+		 * Its fader, a linear factor from 0 to 1.
+		 */
+		volume: number;
+	}
+}
+export namespace BusSetParams {
+	/**
+	 * `bus.set`: at least one of `rename`, `volume`, `muted`; all or none. A rename is
+	 * one undo step and renames the loaded output profile's references; the fader and
+	 * mute are live.
+	 */
+	export interface Root {
+		/**
+		 * Muted.
+		 */
+		muted?: boolean | null;
+		/**
+		 * The bus.
+		 */
+		name: string;
+		/**
+		 * Its new name, under the rules of `bus.add`.
+		 */
+		rename?: string | null;
+		/**
+		 * Its fader, a linear factor from 0 to 1.
+		 */
+		volume?: number | null;
+	}
+}
+export namespace BusSetResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace FilterSetEnabledParams {
+	/**
+	 * `filter.set_enabled` (protocol 1.8).
+	 */
+	export interface Root {
+		/**
+		 * Applied or not.
+		 */
+		enabled: boolean;
+		/**
+		 * The filter's id.
+		 */
+		filter: number;
+	}
+}
+export namespace FilterSetEnabledResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
 /** Every method the plugin calls, with its parameter and answer types. */
 export interface Methods {
 	"session.hello": { params: SessionHelloParams.Root; result: SessionHelloResult.Root };
@@ -3561,4 +3747,12 @@ export interface Methods {
 	"marker.add": { params: MarkerAddParams.Root; result: MarkerAddResult.Root };
 	"canvas.set_preview": { params: CanvasSetPreviewParams.Root; result: CanvasSetPreviewResult.Root };
 	"canvas.transition": { params: CanvasTransitionParams.Root; result: CanvasTransitionResult.Root };
+	"collection.list": { params: CollectionListParams.Root; result: CollectionListResult.Root };
+	"collection.switch": { params: CollectionSwitchParams.Root; result: CollectionSwitchResult.Root };
+	"profile.switch": { params: ProfileSwitchParams.Root; result: ProfileSwitchResult.Root };
+	"replay.arm": { params: ReplayArmParams.Root; result: ReplayArmResult.Root };
+	"replay.disarm": { params: ReplayDisarmParams.Root; result: ReplayDisarmResult.Root };
+	"bus.list": { params: BusListParams.Root; result: BusListResult.Root };
+	"bus.set": { params: BusSetParams.Root; result: BusSetResult.Root };
+	"filter.set_enabled": { params: FilterSetEnabledParams.Root; result: FilterSetEnabledResult.Root };
 }

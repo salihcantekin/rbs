@@ -5,16 +5,21 @@ import { tokens } from "./pictures/tokens.js";
 /** Settings of each action (stored by Stream Deck; ids are strings from the inspector). */
 export interface SceneSettings { scene?: string; sceneName?: string; color?: string; direction?: "next" | "previous"; step?: string }
 export interface SourceSettings { source?: string; sourceName?: string }
+/** A library entry, a filter or a bus a key points at. */
+export interface TargetSettings { entry?: string; filter?: string; bus?: string }
 /** What a press does on a two-state key: both ways, only the first (start, show, mute, pause), or only the second. */
 export type Mode = "toggle" | "on" | "off";
 export interface ModeSettings { mode?: Mode; label0?: string; label1?: string }
-export type Settings = SceneSettings & SourceSettings & ModeSettings;
-export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "studio" | "transition" | "stream" | "source-visible" | "mute";
+export type Settings = SceneSettings & SourceSettings & ModeSettings & TargetSettings;
+export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "studio" | "transition" | "stream" | "source-visible" | "mute" | "replay-buffer" | "collection" | "profile" | "preview" | "status" | "go-live" | "filter" | "bus-mute" | "bus-volume";
 
 /** The parts of RBS's state the keys read, loosely typed (the server may add fields). */
 export interface ViewState {
 	scenes?: { scenes: { id: number; name: string; active?: boolean }[]; program: number; preview?: number; master?: { muted?: boolean; volume?: number }; sources?: { id: number; name: string }[] };
-	sources?: { id: number; name: string; item?: number; visible?: boolean; muted?: boolean; volume?: number }[];
+	sources?: { id: number; name: string; item?: number; visible?: boolean; muted?: boolean; volume?: number; filters?: { id: number; type: string; enabled: boolean }[] }[];
+	buses?: { buses: { name: string; volume: number; muted: boolean }[] };
+	collections?: { entries: { id: string; name: string }[]; current: string };
+	profileLibrary?: { entries: { id: string; name: string }[]; current: string };
 	record?: { state: string; paused?: boolean };
 	stream?: { state: string; connected?: boolean; connects?: number };
 	replay?: { armed?: boolean; saving?: boolean };
@@ -35,8 +40,23 @@ export function linkText(s: LinkStatus): LinkText {
 	}
 }
 
+/** The filter a key points at, with the name of its source. */
+export function findFilter(state: ViewState, id: string | undefined): { source: string; name: string; type: string; enabled: boolean; id: number } | undefined {
+	for (const src of state.sources ?? []) {
+		const f = src.filters?.find((x) => String(x.id) === id);
+		if (f) return { source: src.name, name: f.type, type: f.type, enabled: f.enabled, id: f.id };
+	}
+	return undefined;
+}
+
+const bus = (state: ViewState, name: string | undefined) => state.buses?.buses.find((b) => b.name === name);
+
 /** What a volume dial shows and acts on. */
-export function dialView(settings: Settings, state: ViewState): { title: string; volume?: number; muted?: boolean } {
+export function dialView(kind: Kind, settings: Settings, state: ViewState): { title: string; volume?: number; muted?: boolean } {
+	if (kind === "bus-volume") {
+		const b = bus(state, settings.bus);
+		return { title: settings.bus ?? "Track", volume: b?.volume, muted: b?.muted === true };
+	}
 	if (settings.source === "master") {
 		const m = state.scenes?.master;
 		return { title: "Master", volume: state.scenes ? (m?.volume ?? 1) : undefined, muted: m?.muted === true };
@@ -94,6 +114,12 @@ export function stateIndex(kind: Kind, settings: Settings, state: ViewState): 0 
 		case "mute": return (settings.source === "master" ? state.scenes?.master?.muted : state.sources?.find((x) => String(x.id) === settings.source)?.muted) ? 1 : 0;
 		case "vcam": return state.vcam?.sending ? 1 : 0;
 		case "studio": return state.scenes?.preview !== undefined ? 1 : 0;
+		case "replay-buffer": return state.replay?.armed ? 1 : 0;
+		case "collection": return state.collections?.current === settings.entry ? 1 : 0;
+		case "profile": return state.profileLibrary?.current === settings.entry ? 1 : 0;
+		case "go-live": return state.record?.state === "recording" || state.stream?.state === "live" ? 1 : 0;
+		case "filter": return findFilter(state, settings.filter)?.enabled === false ? 1 : 0;
+		case "bus-mute": return bus(state, settings.bus)?.muted ? 1 : 0;
 		default: return 0;
 	}
 }
@@ -129,6 +155,16 @@ export function jobDone(kind: Kind, settings: Settings, state: ViewState, mode: 
 		}
 		case "vcam": return (state.vcam?.sending === true) === on;
 		case "studio": return (state.scenes?.preview !== undefined) === on;
+		case "replay-buffer": return (state.replay?.armed === true) === on;
+		case "go-live": return (state.record?.state === "recording" || state.stream?.state === "live") === on;
+		case "filter": {
+			const f = findFilter(state, settings.filter);
+			return f !== undefined && f.enabled === on;
+		}
+		case "bus-mute": {
+			const b = bus(state, settings.bus);
+			return b !== undefined && b.muted === (on === true);
+		}
 		default: return false;
 	}
 }
@@ -215,6 +251,64 @@ function lookRaw(kind: Kind, settings: Settings, state: ViewState, ctx: RenderCo
 			return { glyph: glyphs.marker, label: "Marker", tone: state.record?.state === "recording" ? "neutral" : "dim", untitled };
 		case "volume":
 			return { glyph: glyphs.volume, label: "Volume", tone: "neutral", untitled };
+		case "bus-volume":
+			return { glyph: glyphs.bus, label: settings.bus ?? "Track", tone: "neutral", untitled };
+		case "replay-buffer": {
+			const on = state.replay?.armed === true;
+			if (mode === "on") return { glyph: glyphs.replay, label: on ? "Replay on" : "Start replay", tone: on ? "accent" : "neutral", dot: on, untitled };
+			if (mode === "off") return { glyph: glyphs.replay, label: "Stop replay", tone: on ? "neutral" : "dim", untitled };
+			return { glyph: glyphs.replay, label: on ? "Replay on" : "Replay off", tone: on ? "accent" : "neutral", dot: on, untitled };
+		}
+		case "collection":
+		case "profile": {
+			const lib = kind === "collection" ? state.collections : state.profileLibrary;
+			const entry = lib?.entries.find((e) => e.id === settings.entry);
+			const word = kind === "collection" ? "Collection" : "Profile";
+			if (!settings.entry) return { glyph: kind === "collection" ? glyphs.library : glyphs.profile, label: word, sub: "Choose one", tone: "dim", untitled };
+			if (!entry) return { glyph: kind === "collection" ? glyphs.library : glyphs.profile, label: settings.sourceName ?? word, sub: "Not found", tone: "dim", untitled };
+			const active = lib?.current === entry.id;
+			return { glyph: kind === "collection" ? glyphs.library : glyphs.profile, label: entry.name, sub: active ? "In use" : word, tone: active ? "accent" : "neutral", dot: active, untitled };
+		}
+		case "preview": {
+			const scene = state.scenes?.scenes.find((x) => x.id === Number(settings.scene));
+			if (!scene) return { glyph: glyphs.preview, label: "Choose a scene", tone: "dim", untitled };
+			const studio = state.scenes?.preview !== undefined;
+			const on = state.scenes?.preview === scene.id;
+			return { glyph: glyphs.preview, label: scene.name, sub: studio ? "Preview" : "Studio off", tone: !studio ? "dim" : on ? "accent" : "neutral", dot: on, untitled };
+		}
+		case "status": {
+			const rec = state.record?.state === "recording";
+			const on = state.stream?.state === "live";
+			const time = formatElapsed(elapsed.ms + (elapsed.running ? now - elapsed.at : 0));
+			const streamText = on ? (state.stream?.connected ? (ctx.liveSince > 0 ? formatElapsed(now - ctx.liveSince) : "Live") : "Connecting") : "";
+			if (rec && on) return { glyph: live(glyphs.recordIdle), label: "Rec + Live", sub: time, tone: "live", ring: !state.record?.paused, pulse, untitled };
+			if (rec) return { glyph: live(glyphs.recordIdle), label: state.record?.paused ? "Paused" : "Recording", sub: time, tone: "live", ring: !state.record?.paused, pulse, untitled };
+			if (on) return { glyph: glyphs.stream, label: "Live", sub: streamText, tone: "live", ring: true, pulse, untitled };
+			return { glyph: glyphs.info, label: "Idle", tone: "dim", untitled };
+		}
+		case "go-live": {
+			const running = state.record?.state === "recording" || state.stream?.state === "live";
+			if (mode === "on") return { glyph: glyphs.goLive, label: running ? "Running" : "Go live", tone: running ? "live" : "neutral", ring: running, pulse, untitled };
+			if (mode === "off") return { glyph: glyphs.stop, label: "End all", tone: running ? "live" : "dim", untitled };
+			return { glyph: running ? glyphs.stop : glyphs.goLive, label: running ? "End all" : "Go live", tone: running ? "live" : "neutral", ring: running, pulse, untitled };
+		}
+		case "filter": {
+			const f = findFilter(state, settings.filter);
+			if (!settings.filter) return { glyph: glyphs.filter, label: "Filter", sub: "Choose one", tone: "dim", untitled };
+			if (!f) return { glyph: glyphs.filter, label: "Filter", sub: "Not in scene", tone: "dim", untitled };
+			const name = f.type.replace(/_/g, " ");
+			if (mode === "on") return { glyph: glyphs.filter, label: name, sub: "Turn on", tone: f.enabled ? "accent" : "neutral", untitled };
+			if (mode === "off") return { glyph: glyphs.filter, label: name, sub: "Turn off", tone: f.enabled ? "neutral" : "accent", untitled };
+			return { glyph: glyphs.filter, label: name, sub: name.includes(" ") ? undefined : f.source, tone: f.enabled ? "accent" : "dim", dot: f.enabled, untitled };
+		}
+		case "bus-mute": {
+			const b = bus(state, settings.bus);
+			if (!settings.bus) return { glyph: glyphs.bus, label: "Track", sub: "Choose one", tone: "dim", untitled };
+			if (!b) return { glyph: glyphs.bus, label: settings.bus, sub: "Not found", tone: "dim", untitled };
+			if (mode === "on") return { glyph: glyphs.speakerOff, label: b.name, sub: "Mute", tone: b.muted ? "accent" : "neutral", untitled };
+			if (mode === "off") return { glyph: glyphs.speakerOn, label: b.name, sub: "Unmute", tone: b.muted ? "neutral" : "accent", untitled };
+			return { glyph: b.muted ? glyphs.speakerOff : glyphs.speakerOn, label: b.name, tone: b.muted ? "dim" : "neutral", untitled };
+		}
 	}
 }
 

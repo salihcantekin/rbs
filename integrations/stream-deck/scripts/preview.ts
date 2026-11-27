@@ -12,6 +12,14 @@ const st: ViewState = {
 };
 const rec: ViewState = { ...st, record: { state: "recording" }, stream: { state: "live", connected: true, connects: 1 } };
 const paused: ViewState = { ...st, record: { state: "recording", paused: true } };
+const more: ViewState = {
+	...st,
+	scenes: { ...st.scenes!, preview: 1 },
+	sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: true }] }],
+	buses: { buses: [{ name: "Music", volume: 0.5, muted: false }] },
+	collections: { entries: [{ id: "a", name: "Show" }, { id: "b", name: "Talk" }], current: "a" },
+	profileLibrary: { entries: [{ id: "p", name: "Stream" }], current: "p" },
+};
 const k = (kind: Kind, s: ViewState = st, settings: Settings = {}, c = ctx) => drawKey(look(kind, settings, s, c));
 const groups: [string, string[]][] = [
 	["Scene", [k("scene", st, { scene: "1" }), k("scene", st, { scene: "2" }), k("scene", st, { scene: "1", color: "#ff9f43" }), k("scene", st, { scene: "9" })]],
@@ -20,6 +28,15 @@ const groups: [string, string[]][] = [
 	["Source", [k("source-visible", st, { source: "7" }), k("source-visible", st, { source: "8" }), k("source-visible", st, { source: "9" }), k("mute", st, { source: "7" }), k("mute", st, { source: "8" }), k("mute", st, { source: "master" })]],
 	["Modes", [k("record", st, { mode: "on" }), k("record", rec, { mode: "on" }), k("record", st, { mode: "off" }), k("record", rec, { mode: "off" }), k("source-visible", st, { source: "7", mode: "on" }), k("mute", st, { source: "7", mode: "off" })]],
 	["More", [k("scene-step", st, { direction: "next" }), k("scene-step", st, { direction: "previous" }), k("replay"), k("replay", { ...st, replay: { armed: true, saving: true } }), k("vcam"), k("vcam", { ...st, vcam: { sending: true } }), k("marker"), k("marker", rec), k("studio"), k("studio", { ...st, scenes: { ...st.scenes!, preview: 2 } }), k("transition", { ...st, scenes: { ...st.scenes!, preview: 2 } })]],
+	["New keys", [
+		k("replay-buffer"), k("replay-buffer", more),
+		k("collection", more, { entry: "a" }), k("collection", more, { entry: "b" }), k("profile", more, { entry: "p" }),
+		k("preview", more, { scene: "1" }), k("preview", more, { scene: "2" }),
+		k("status"), k("status", rec, {}, { ...ctx, now: 1000 }),
+		k("go-live"), k("go-live", rec),
+		k("filter", more, { filter: "31" }), k("filter", { ...more, sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: false }] }] }, { filter: "31" }),
+		k("bus-mute", more, { bus: "Music" }), k("bus-mute", { ...more, buses: { buses: [{ name: "Music", volume: 1, muted: true }] } }, { bus: "Music" }),
+	]],
 	["No link", ["Not connected", "Set token", "Token rejected", "Update RBS"].map((title) => linkKey({ title }))],
 	["With your own title (no text)", [k("record", rec, {}, { ...ctx, titled: true }), k("scene", st, { scene: "1" }, { ...ctx, titled: true }), k("mute", st, { source: "7" }, { ...ctx, titled: true })]],
 ];

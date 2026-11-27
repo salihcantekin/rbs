@@ -42,6 +42,14 @@ export const METHODS = [
 	"marker.add",
 	"canvas.set_preview",
 	"canvas.transition",
+	"collection.list",
+	"collection.switch",
+	"profile.switch",
+	"replay.arm",
+	"replay.disarm",
+	"bus.list",
+	"bus.set",
+	"filter.set_enabled",
 ];
 
 const pascal = (m) => m.split(/[._]/).map((p) => p[0].toUpperCase() + p.slice(1)).join("");

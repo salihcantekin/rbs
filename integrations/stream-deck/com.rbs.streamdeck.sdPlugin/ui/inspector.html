@@ -57,6 +57,44 @@
 		</sdpi-item>
 	</div>
 
+	<div data-action="collection" hidden>
+		<sdpi-item label="Collection">
+			<sdpi-select setting="entry" datasource="getCollections" loading="Loading..." hot-reload placeholder="Choose a scene collection"></sdpi-select>
+		</sdpi-item>
+		<p class="hint">RBS refuses a switch while recording or streaming.</p>
+	</div>
+	<div data-action="profile" hidden>
+		<sdpi-item label="Profile">
+			<sdpi-select setting="entry" datasource="getProfiles" loading="Loading..." hot-reload placeholder="Choose an output profile"></sdpi-select>
+		</sdpi-item>
+		<p class="hint">RBS refuses a switch while recording or streaming.</p>
+	</div>
+	<div data-action="preview" hidden>
+		<sdpi-item label="Scene">
+			<sdpi-select setting="scene" datasource="getScenes" loading="Loading..." hot-reload placeholder="Choose a scene"></sdpi-select>
+		</sdpi-item>
+		<p class="hint">Works while studio mode is on.</p>
+	</div>
+	<div data-action="filter" hidden>
+		<sdpi-item label="Filter">
+			<sdpi-select setting="filter" datasource="getFilters" loading="Loading..." hot-reload placeholder="Choose a filter"></sdpi-select>
+		</sdpi-item>
+		<p class="hint">Lists the filters of the sources in the scene on air, such as background removal.</p>
+	</div>
+	<div data-action="bus-mute" hidden>
+		<sdpi-item label="Track">
+			<sdpi-select setting="bus" datasource="getBuses" loading="Loading..." hot-reload placeholder="Choose a track"></sdpi-select>
+		</sdpi-item>
+	</div>
+	<div data-action="bus-volume" hidden>
+		<sdpi-item label="Track">
+			<sdpi-select setting="bus" datasource="getBuses" loading="Loading..." hot-reload placeholder="Choose a track"></sdpi-select>
+		</sdpi-item>
+		<sdpi-item label="Step (%)">
+			<sdpi-range setting="step" min="1" max="25" default="5" showlabels></sdpi-range>
+		</sdpi-item>
+	</div>
+
 	<div id="mode" hidden>
 		<sdpi-item label="When pressed">
 			<sdpi-select setting="mode" id="mode-select" placeholder="Toggle"></sdpi-select>
@@ -110,8 +148,12 @@
 				"record-pause": ["Pause and resume", "Pause only", "Resume only"],
 				"source-visible": ["Show and hide", "Show only", "Hide only"],
 				mute: ["Mute and unmute", "Mute only", "Unmute only"],
+				"replay-buffer": ["Turn on and off", "Turn on only", "Turn off only"],
+				"go-live": ["Start and stop", "Start only", "Stop only"],
+				filter: ["Turn on and off", "Turn on only", "Turn off only"],
+				"bus-mute": ["Mute and unmute", "Mute only", "Unmute only"],
 			}[kind];
-			if (["scene","record","record-pause","stream","source-visible","mute","vcam","studio"].includes(kind)) document.getElementById("label1").removeAttribute("hidden");
+			if (["scene","record","record-pause","stream","source-visible","mute","vcam","studio","replay-buffer","collection","profile","go-live","filter","bus-mute"].includes(kind)) document.getElementById("label1").removeAttribute("hidden");
 			if (modes) {
 				const sel = document.getElementById("mode-select");
 				["toggle", "on", "off"].forEach((v, i) => {
