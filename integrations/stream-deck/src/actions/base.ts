@@ -125,7 +125,8 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 
 	override onTitleParametersDidChange(ev: TitleParametersDidChangeEvent<JsonObject>): void {
 		const m = titles.get(ev.action.id) ?? new Map<number, boolean>();
-		m.set(ev.payload.state ?? 0, Boolean(ev.payload.title));
+		// A title the user hid with "Show title" off is not drawn by Stream Deck, so it does not count.
+		m.set(ev.payload.state ?? 0, Boolean(ev.payload.title) && ev.payload.titleParameters?.showTitle !== false);
 		titles.set(ev.action.id, m);
 		shown.delete(ev.action.id);
 		repaintAll();

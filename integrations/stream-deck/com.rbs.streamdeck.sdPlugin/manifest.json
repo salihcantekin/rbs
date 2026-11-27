@@ -1,304 +1,325 @@
 {
-  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
-  "UUID": "com.rbs.streamdeck",
-  "Name": "RBS",
-  "Version": "0.1.0.0",
-  "Author": "RBS",
-  "Description": "Control RBS from your Stream Deck: switch scenes, record, stream, show or hide sources and mute, with live state on the keys.",
-  "Category": "RBS",
-  "CategoryIcon": "imgs/category",
-  "Icon": "imgs/plugin",
-  "CodePath": "bin/plugin.js",
-  "SDKVersion": 3,
-  "Software": {
-    "MinimumVersion": "7.1"
-  },
-  "OS": [
-    {
-      "Platform": "windows",
-      "MinimumVersion": "10"
-    },
-    {
-      "Platform": "mac",
-      "MinimumVersion": "12"
-    }
-  ],
-  "Nodejs": {
-    "Version": "24",
-    "Debug": "enabled"
-  },
-  "PropertyInspectorPath": "ui/inspector.html",
-  "Actions": [
-    {
-      "Name": "Scene",
-      "UUID": "com.rbs.streamdeck.scene",
-      "Icon": "imgs/scene",
-      "Tooltip": "Switch to a scene. The key lights up while the scene is on air.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Inactive",
-          "Image": "imgs/scene-key",
-          "Title": ""
-        },
-        {
-          "Name": "On air",
-          "Image": "imgs/scene-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Record",
-      "UUID": "com.rbs.streamdeck.record",
-      "Icon": "imgs/record",
-      "Tooltip": "Start or stop recording. Shows the recording time.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Start",
-          "Image": "imgs/record-key",
-          "Title": ""
-        },
-        {
-          "Name": "Stop",
-          "Image": "imgs/record-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Pause / Resume",
-      "UUID": "com.rbs.streamdeck.record-pause",
-      "Icon": "imgs/record-pause",
-      "Tooltip": "Pause or resume the recording.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Pause",
-          "Image": "imgs/record-pause-key",
-          "Title": ""
-        },
-        {
-          "Name": "Resume",
-          "Image": "imgs/record-pause-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Stream",
-      "UUID": "com.rbs.streamdeck.stream",
-      "Icon": "imgs/stream",
-      "Tooltip": "Start or stop streaming. Shows when you are live.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Start",
-          "Image": "imgs/stream-key",
-          "Title": ""
-        },
-        {
-          "Name": "Stop",
-          "Image": "imgs/stream-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Show / hide source",
-      "UUID": "com.rbs.streamdeck.source-visible",
-      "Icon": "imgs/source-visible",
-      "Tooltip": "Show or hide a source in the scene on air.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Shown",
-          "Image": "imgs/source-visible-key",
-          "Title": ""
-        },
-        {
-          "Name": "Hidden",
-          "Image": "imgs/source-visible-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Mute",
-      "UUID": "com.rbs.streamdeck.mute",
-      "Icon": "imgs/mute",
-      "Tooltip": "Mute or unmute a source, or the master.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Unmuted",
-          "Image": "imgs/mute-key",
-          "Title": ""
-        },
-        {
-          "Name": "Muted",
-          "Image": "imgs/mute-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Next / previous scene",
-      "UUID": "com.rbs.streamdeck.scene-step",
-      "Icon": "imgs/scene-step",
-      "Tooltip": "Go to the next or previous scene.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Image": "imgs/scene-step-key",
-          "Title": ""
-        }
-      ]
-    },
-    {
-      "Name": "Save replay",
-      "UUID": "com.rbs.streamdeck.replay",
-      "Icon": "imgs/replay",
-      "Tooltip": "Save the replay buffer.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Image": "imgs/replay-key",
-          "Title": ""
-        }
-      ]
-    },
-    {
-      "Name": "Virtual camera",
-      "UUID": "com.rbs.streamdeck.vcam",
-      "Icon": "imgs/vcam",
-      "Tooltip": "Start or stop the virtual camera.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Name": "Off",
-          "Image": "imgs/vcam-key",
-          "Title": ""
-        },
-        {
-          "Name": "On",
-          "Image": "imgs/vcam-key-1",
-          "Title": ""
-        }
-      ],
-      "DisableAutomaticStates": true
-    },
-    {
-      "Name": "Marker",
-      "UUID": "com.rbs.streamdeck.marker",
-      "Icon": "imgs/marker",
-      "Tooltip": "Add a marker to the recording.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Image": "imgs/marker-key",
-          "Title": ""
-        }
-      ]
-    },
-    {
-      "Name": "Studio mode",
-      "UUID": "com.rbs.streamdeck.studio",
-      "Icon": "imgs/studio",
-      "Tooltip": "Turn studio mode on or off.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "DisableAutomaticStates": true,
-      "States": [
-        {
-          "Name": "Off",
-          "Image": "imgs/studio-key",
-          "Title": ""
-        },
-        {
-          "Name": "On",
-          "Image": "imgs/studio-key-1",
-          "Title": ""
-        }
-      ]
-    },
-    {
-      "Name": "Transition",
-      "UUID": "com.rbs.streamdeck.transition",
-      "Icon": "imgs/transition",
-      "Tooltip": "Put the preview scene on air (studio mode).",
-      "Controllers": [
-        "Keypad"
-      ],
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Image": "imgs/transition-key",
-          "Title": ""
-        }
-      ]
-    },
-    {
-      "Name": "Volume dial",
-      "UUID": "com.rbs.streamdeck.volume",
-      "Icon": "imgs/volume",
-      "Tooltip": "Turn to change a source's volume, press to mute.",
-      "PropertyInspectorPath": "ui/inspector.html",
-      "States": [
-        {
-          "Image": "imgs/volume-key",
-          "Title": ""
-        }
-      ],
-      "Encoder": {
-        "layout": "$B1",
-        "TriggerDescription": {
-          "Rotate": "Volume",
-          "Push": "Mute"
-        }
-      },
-      "Controllers": [
-        "Encoder"
-      ]
-    }
-  ]
+	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+	"UUID": "com.rbs.streamdeck",
+	"Name": "RBS",
+	"Version": "0.1.0.0",
+	"Author": "RBS",
+	"Description": "Control RBS from your Stream Deck: switch scenes, record, stream, show or hide sources and mute, with live state on the keys.",
+	"Category": "RBS",
+	"CategoryIcon": "imgs/category",
+	"Icon": "imgs/plugin",
+	"CodePath": "bin/plugin.js",
+	"SDKVersion": 3,
+	"Software": {
+		"MinimumVersion": "7.1"
+	},
+	"OS": [
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		},
+		{
+			"Platform": "mac",
+			"MinimumVersion": "12"
+		}
+	],
+	"Nodejs": {
+		"Version": "24",
+		"Debug": "enabled"
+	},
+	"PropertyInspectorPath": "ui/inspector.html",
+	"Actions": [
+		{
+			"Name": "Scene",
+			"UUID": "com.rbs.streamdeck.scene",
+			"Icon": "imgs/scene",
+			"Tooltip": "Switch to a scene. The key lights up while the scene is on air.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Inactive",
+					"Image": "imgs/scene-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "On air",
+					"Image": "imgs/scene-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Record",
+			"UUID": "com.rbs.streamdeck.record",
+			"Icon": "imgs/record",
+			"Tooltip": "Start or stop recording. Shows the recording time.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Start",
+					"Image": "imgs/record-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Stop",
+					"Image": "imgs/record-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Pause / Resume",
+			"UUID": "com.rbs.streamdeck.record-pause",
+			"Icon": "imgs/record-pause",
+			"Tooltip": "Pause or resume the recording.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Pause",
+					"Image": "imgs/record-pause-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Resume",
+					"Image": "imgs/record-pause-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Stream",
+			"UUID": "com.rbs.streamdeck.stream",
+			"Icon": "imgs/stream",
+			"Tooltip": "Start or stop streaming. Shows when you are live.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Start",
+					"Image": "imgs/stream-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Stop",
+					"Image": "imgs/stream-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Show / hide source",
+			"UUID": "com.rbs.streamdeck.source-visible",
+			"Icon": "imgs/source-visible",
+			"Tooltip": "Show or hide a source in the scene on air.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Shown",
+					"Image": "imgs/source-visible-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Hidden",
+					"Image": "imgs/source-visible-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Mute",
+			"UUID": "com.rbs.streamdeck.mute",
+			"Icon": "imgs/mute",
+			"Tooltip": "Mute or unmute a source, or the master.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Unmuted",
+					"Image": "imgs/mute-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "Muted",
+					"Image": "imgs/mute-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Next / previous scene",
+			"UUID": "com.rbs.streamdeck.scene-step",
+			"Icon": "imgs/scene-step",
+			"Tooltip": "Go to the next or previous scene.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/scene-step-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Save replay",
+			"UUID": "com.rbs.streamdeck.replay",
+			"Icon": "imgs/replay",
+			"Tooltip": "Save the replay buffer.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/replay-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Virtual camera",
+			"UUID": "com.rbs.streamdeck.vcam",
+			"Icon": "imgs/vcam",
+			"Tooltip": "Start or stop the virtual camera.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Name": "Off",
+					"Image": "imgs/vcam-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "On",
+					"Image": "imgs/vcam-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"DisableAutomaticStates": true
+		},
+		{
+			"Name": "Marker",
+			"UUID": "com.rbs.streamdeck.marker",
+			"Icon": "imgs/marker",
+			"Tooltip": "Add a marker to the recording.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/marker-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Studio mode",
+			"UUID": "com.rbs.streamdeck.studio",
+			"Icon": "imgs/studio",
+			"Tooltip": "Turn studio mode on or off.",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Name": "Off",
+					"Image": "imgs/studio-key",
+					"Title": "",
+					"ShowTitle": false
+				},
+				{
+					"Name": "On",
+					"Image": "imgs/studio-key-1",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Transition",
+			"UUID": "com.rbs.streamdeck.transition",
+			"Icon": "imgs/transition",
+			"Tooltip": "Put the preview scene on air (studio mode).",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/transition-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			]
+		},
+		{
+			"Name": "Volume dial",
+			"UUID": "com.rbs.streamdeck.volume",
+			"Icon": "imgs/volume",
+			"Tooltip": "Turn to change a source's volume, press to mute.",
+			"PropertyInspectorPath": "ui/inspector.html",
+			"States": [
+				{
+					"Image": "imgs/volume-key",
+					"Title": "",
+					"ShowTitle": false
+				}
+			],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Volume",
+					"Push": "Mute"
+				}
+			},
+			"Controllers": [
+				"Encoder"
+			]
+		}
+	]
 }
