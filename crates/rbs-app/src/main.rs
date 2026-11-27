@@ -4173,7 +4173,7 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
             }
         });
     });
-    g.on_props_matches(|title, query| section_keys::matches(&title, &query));
+    g.on_props_matches(|t, q| entry::guard_or(|| false, || section_keys::matches(&t, &q)));
     // Properties' Collapse all / Expand all: the sections it draws now, by id.
     let c = ctx.clone();
     g.on_list_state(move |ids, _rev| {
