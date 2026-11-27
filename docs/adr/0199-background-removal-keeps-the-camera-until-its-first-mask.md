@@ -1,6 +1,6 @@
 # ADR-0199: Background removal keeps the camera until its first mask, then cross-fades
 
-- Status: Proposed
+- Status: Accepted (2026-11-27)
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Supersedes in part: [ADR-0179](0179-camera-background-removal.md) decision 4, the clause "until the first mask exists the filter publishes nothing"
@@ -124,3 +124,5 @@ Author's changes after round 3 (2026-11-27), for the reviewer to check:
 16. The cold-start limit is stated under Consequences.
 17. `param.rs` comment and the `take_list` decision number fixed.
 3. Cost under the lock stated as capacity x capacity; numbers and Salih's approval still pending.
+
+Owner approval: Salih, 2026-11-27 22:07 (tested 5650d89 on SC-PC: turning the filter on and off and scene switches showed no vanish and no room; approved the ADR, the hot-path change (rule 12) and the merge).

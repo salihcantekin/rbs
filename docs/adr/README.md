@@ -205,4 +205,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0195](0195-inactive-scenes-and-list-filters.md) | Inactive scenes and filters for the Scenes and Sources lists | Proposed |
 | [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Accepted |
 | [0197](0197-panel-drag-feedback-and-full-height-side-areas.md) | Panel drag feedback (empty slot, outlines, pointer card, Escape) and left or right areas that run the full window height | Accepted |
-| [0199](0199-background-removal-keeps-the-camera-until-its-first-mask.md) | Background removal keeps the camera until its first mask (0.5 s at most), then cross-fades | Proposed |
+| [0199](0199-background-removal-keeps-the-camera-until-its-first-mask.md) | Background removal keeps the camera until its first mask (0.5 s at most), then cross-fades | Accepted |
