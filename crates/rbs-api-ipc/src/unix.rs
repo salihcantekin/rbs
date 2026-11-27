@@ -107,7 +107,7 @@ fn owned_dir(dir: &Path, uid: u32) -> Option<PathBuf> {
 
 /// The per-user temporary folder macOS gives this user, read from the OS rather than
 /// from `TMPDIR`.
-#[cfg(target_vendor = "apple")]
+#[cfg(target_os = "macos")]
 fn darwin_user_temp() -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut buf = [0u8; 1024];
@@ -128,7 +128,7 @@ fn darwin_user_temp() -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(target_os = "macos"))]
 fn darwin_user_temp() -> Option<PathBuf> {
     None
 }
@@ -503,10 +503,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn the_environment_wins_over_run_user_on_linux() {
-        if cfg!(target_os = "macos") {
-            return;
-        }
         let p = Places {
             xdg_runtime_dir: Some("/custom/run".into()),
             run_user: Some("/run/user/501".into()),
@@ -519,10 +517,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn darwin_folder_wins_over_tmpdir_on_macos() {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
         let p = Places {
             tmpdir: Some("/elsewhere".into()),
             darwin_user_temp: Some("/var/folders/ab/xyz/T".into()),
@@ -532,5 +528,19 @@ mod tests {
             endpoint_in(&p),
             PathBuf::from("/var/folders/ab/xyz/T/rbs/control.sock")
         );
+    }
+
+    #[test]
+    fn owned_dir_takes_only_a_real_directory_of_the_user() {
+        let dir = std::env::temp_dir().join(format!("rbs-owned-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uid = current_uid();
+        assert_eq!(owned_dir(&dir, uid), Some(dir.clone()));
+        assert_eq!(owned_dir(&dir, uid.wrapping_add(1)), None);
+        assert_eq!(owned_dir(&dir.join("missing"), uid), None);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert_eq!(owned_dir(&link, uid), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
