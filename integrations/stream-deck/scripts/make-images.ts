@@ -30,7 +30,7 @@ for (const [kind, settings] of kinds) {
 
 // The small action-list icons of the actions added after 0.2 (white strokes in a 20 by 20 box).
 const list: Record<string, string> = {
-	"replay-buffer": glyphs.replay, collection: glyphs.library, profile: glyphs.profile, preview: glyphs.preview, status: glyphs.info,
+	replay: glyphs.replay, "replay-buffer": glyphs.replay, collection: glyphs.library, profile: glyphs.profile, preview: glyphs.preview, status: glyphs.info,
 	"go-live": glyphs.goLive, filter: glyphs.filter, "bus-mute": glyphs.bus, "bus-volume": glyphs.bus,
 };
 for (const [name, glyph] of Object.entries(list)) {
