@@ -371,8 +371,9 @@ const HOLD_LIMIT: Duration = Duration::from_secs(1);
 /// swap, so for a while the new list names a producer that is not linked yet: drawn,
 /// its layer would vanish. Until then the current list is drawn. A producer that was
 /// unlinked in the current list too (a source that failed) does not hold a list, and
-/// no list waits longer than [`HOLD_LIMIT`]. Runs only when a list is waiting; no
-/// allocation.
+/// no list waits longer than [`HOLD_LIMIT`]. A list taken after waiting has its fades
+/// and slides moved later by the wait, so they play whole instead of jumping. Runs
+/// only when a list is waiting; no allocation.
 fn take_list(
     layers: &mut ParamReceiver<LayerList>,
     held: &mut Option<Timestamp>,
@@ -384,10 +385,31 @@ fn take_list(
         let since = *held.get_or_insert(now);
         now.saturating_since(since) >= HOLD_LIMIT || linked(inputs, current, next, capacity)
     });
-    if taken {
-        *held = None;
+    if taken && let Some(since) = held.take() {
+        delay(layers.get_mut(), now.saturating_since(since));
     }
     taken
+}
+
+/// Moves the fade and slide starts of `list` later by `by`.
+#[inline(never)]
+fn delay(list: &mut LayerList, by: Duration) {
+    if by.is_zero() {
+        return;
+    }
+    for layer in &mut list.layers {
+        if let Some(fade) = &mut layer.fade {
+            fade.start = fade.start + by;
+        }
+        if let Some(slide) = &mut layer.slide {
+            slide.start = slide.start + by;
+        }
+    }
+    for span in &mut list.spans {
+        if let Some(slide) = &mut span.slide {
+            slide.start = slide.start + by;
+        }
+    }
 }
 
 /// True when every layer of `next` has its link, or had none in `current` either.
@@ -817,8 +839,9 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         }
         // Scroll records arrive once; a change of binding needs no redraw by itself.
         let binding = bound(&mut self.scroll);
-        // A linked layer without a picture this tick (ADR-0128 decision 7).
-        let mut missing = false;
+        // A linked layer without a picture this tick (ADR-0128 decision 7), or a new
+        // list still waiting: the current one is not the scene the counter waits for.
+        let mut missing = R::TRACKS && self.held.is_some();
         if D::ON_CHANGE {
             self.key.clear();
             // A fade, slide or scroll that had not ended at the last draw still moves.
@@ -935,6 +958,7 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
             scroll,
             stats,
             capacity,
+            held,
             ..
         } = self;
         let compositor = compositor.as_mut().ok_or(NodeError::NotReady)?;
@@ -949,7 +973,7 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
         }
         size_spans(slots, spans, pool, gpu, stats);
         let binding = bound(scroll);
-        let mut missing = false;
+        let mut missing = R::TRACKS && held.is_some();
         // Per span: a member moves, so its intermediate is drawn again.
         let mut inner = [false; MAX_SPANS];
         let was_valid = *drawn_valid;

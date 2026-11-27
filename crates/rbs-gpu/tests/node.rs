@@ -10,9 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use common::{assert_close, at};
-
-#[path = "node/hold.rs"]
-mod hold;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{
     ColorSpace, FramePayload, PixelFormat, Size, VideoFormat, VideoFrame, next_generation,
@@ -33,6 +30,9 @@ use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, WarmCtx, channel,
 };
 use std::time::Duration;
+
+#[path = "node/hold.rs"]
+mod hold;
 
 const W: u32 = 64;
 const H: u32 = 32;

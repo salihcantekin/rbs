@@ -34,8 +34,9 @@ struct Shared<T> {
     exchange: Mutex<Exchange<T>>,
 }
 
-/// What the two sides exchange. Both ends hold the lock only to move `Option`s, never
-/// while running user code or dropping a value.
+/// What the two sides exchange. Both ends hold the lock only to move `Option`s and, in
+/// [`ParamReceiver::update_when`], to run its short `accept` check; never while dropping
+/// a value.
 ///
 /// Invariant: `fresh` and `used` are never both `Some`, because `send` empties `used`
 /// whenever it fills `fresh`, and `update` fills `used` only when it empties `fresh`.
