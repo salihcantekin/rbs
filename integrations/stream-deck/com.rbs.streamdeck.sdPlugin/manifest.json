@@ -40,7 +40,8 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
-          "Image": "imgs/scene-key"
+          "Image": "imgs/scene-key",
+          "Title": ""
         }
       ]
     },
@@ -55,7 +56,24 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
-          "Image": "imgs/record-key"
+          "Image": "imgs/record-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Pause / Resume",
+      "UUID": "com.rbs.streamdeck.record-pause",
+      "Icon": "imgs/record-pause",
+      "Tooltip": "Pause or resume the recording.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/record-pause-key",
+          "Title": ""
         }
       ]
     },
@@ -70,7 +88,8 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
-          "Image": "imgs/stream-key"
+          "Image": "imgs/stream-key",
+          "Title": ""
         }
       ]
     },
@@ -85,7 +104,8 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
-          "Image": "imgs/source-visible-key"
+          "Image": "imgs/source-visible-key",
+          "Title": ""
         }
       ]
     },
@@ -100,7 +120,8 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
-          "Image": "imgs/mute-key"
+          "Image": "imgs/mute-key",
+          "Title": ""
         }
       ]
     }

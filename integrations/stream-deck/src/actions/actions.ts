@@ -13,6 +13,11 @@ export class RecordAction extends RbsKeyAction {
 	readonly kind = "record" as const;
 }
 
+@action({ UUID: `${PLUGIN_UUID}.record-pause` })
+export class RecordPauseAction extends RbsKeyAction {
+	readonly kind = "record-pause" as const;
+}
+
 @action({ UUID: `${PLUGIN_UUID}.stream` })
 export class StreamAction extends RbsKeyAction {
 	readonly kind = "stream" as const;

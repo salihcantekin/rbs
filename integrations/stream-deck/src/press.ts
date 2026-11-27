@@ -27,10 +27,18 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 		case "record": {
 			if (state.record?.state === "recording") await client.call("record.stop", {});
 			else {
-				const profile = settings.profile || client.state.profiles?.[0]?.id;
+				// The profile RBS has selected: the user chose it in RBS, not on the key.
+				const current = (await client.call("profile.list", {})).current;
+				const known = client.state.profiles ?? [];
+				const profile = known.some((p) => p.id === current) ? current : known[0]?.id;
 				if (!profile) throw new Error("RBS has no recording profile.");
 				await client.call("record.start", { profile });
 			}
+			return;
+		}
+		case "record-pause": {
+			if (state.record?.state !== "recording") return;
+			await client.call("record.pause_toggle", {});
 			return;
 		}
 		case "stream": {
@@ -40,7 +48,7 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 		}
 		case "source-visible": {
 			const src = state.sources?.find((s) => String(s.id) === settings.source);
-			if (!src || src.item === undefined) throw new Error("The source is not in the program scene.");
+			if (!src || src.item === undefined) return; // not in the scene on air: nothing to do
 			await client.call("item.set_visible", { item: src.item, visible: src.visible === false } as never);
 			return;
 		}

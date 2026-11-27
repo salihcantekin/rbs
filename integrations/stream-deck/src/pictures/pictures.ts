@@ -34,6 +34,8 @@ interface Frame {
 	/** Smaller second text under the icon (for example the elapsed time). */
 	sub?: string;
 	dim?: boolean;
+	/** The user set a Stream Deck title: it is drawn by the app, so draw no text. */
+	untitled?: boolean;
 }
 
 function frame(f: Frame): string {
@@ -42,7 +44,9 @@ function frame(f: Frame): string {
 	const font = `font-family="Segoe UI, Helvetica, Arial, sans-serif" fill="${fg}"`;
 	const row = (y: number, txt: string, weight: number) =>
 		`<text x="72" y="${y}" text-anchor="middle" ${font} font-size="${t.labelSize}" font-weight="${weight}">${esc(txt)}</text>`;
-	const text = f.sub
+	const text = f.untitled
+		? ""
+		: f.sub
 		? row(103, lines[0] ?? "", 600) + row(128, f.sub, 400)
 		: lines.map((l, i) => row((lines.length > 1 ? 106 : 120) + i * t.labelLineHeight, l, 600)).join("");
 	return (
@@ -61,32 +65,32 @@ const speaker = `<path d="M6 22h12l16-14v44L18 38H6z"/>`;
 const speakerOn = `${speaker}<path d="M44 20c6 6 6 18 0 24M52 12c10 10 10 30 0 40"/>`;
 const speakerOff = `${speaker}<path d="M44 22l16 16M60 22L44 38"/>`;
 
-export function sceneKey(name: string, active: boolean, missing: boolean): string {
-	return frame({ bg: active ? t.bgActive : t.bg, icon: sceneIcon.replace("<rect", active ? `<rect fill="${t.accent}" fill-opacity=".35" stroke="${t.accent}"` : "<rect"), label: missing ? "Missing scene" : name, dim: missing });
+export function sceneKey(name: string, active: boolean, missing: boolean, untitled = false): string {
+	return frame({ bg: active ? t.bgActive : t.bg, icon: sceneIcon.replace("<rect", active ? `<rect fill="${t.accent}" fill-opacity=".35" stroke="${t.accent}"` : "<rect"), label: missing ? "Missing scene" : name, dim: missing, untitled });
 }
 
-export function recordKey(kind: "idle" | "recording" | "paused", elapsed?: string): string {
+export function recordKey(kind: "idle" | "recording" | "paused", elapsed?: string, untitled = false): string {
 	const dot = `<circle cx="32" cy="30" r="22"/>`;
-	if (kind === "idle") return frame({ bg: t.bg, icon: dot + `<circle cx="32" cy="30" r="9" fill="${t.fg}"/>`, label: "Record" });
+	if (kind === "idle") return frame({ bg: t.bg, icon: dot + `<circle cx="32" cy="30" r="9" fill="${t.fg}"/>`, label: "Record", untitled });
 	const pause = `<path d="M22 18v24M42 18v24"/>`;
-	return frame({ bg: t.bgLive, fg: t.fg, icon: kind === "paused" ? dot + pause : `<circle cx="32" cy="30" r="22" stroke="${t.live}"/><circle cx="32" cy="30" r="12" fill="${t.live}" stroke="${t.live}"/>`, label: kind === "paused" ? "Paused" : "Recording", sub: elapsed });
+	return frame({ bg: t.bgLive, fg: t.fg, icon: kind === "paused" ? dot + pause : `<circle cx="32" cy="30" r="22" stroke="${t.live}"/><circle cx="32" cy="30" r="12" fill="${t.live}" stroke="${t.live}"/>`, label: "Stop", sub: elapsed, untitled });
 }
 
-export function streamKey(kind: "idle" | "connecting" | "live" | "reconnecting"): string {
+export function streamKey(kind: "idle" | "connecting" | "live" | "reconnecting", untitled = false): string {
 	const waves = `<circle cx="32" cy="30" r="6" fill="${t.fg}"/><path d="M18 16a20 20 0 0 0 0 28M46 16a20 20 0 0 1 0 28M8 8a34 34 0 0 0 0 44M56 8a34 34 0 0 1 0 44"/>`;
-	if (kind === "idle") return frame({ bg: t.bg, icon: waves, label: "Stream" });
+	if (kind === "idle") return frame({ bg: t.bg, icon: waves, label: "Stream", untitled });
 	const red = waves.replace(/fill="[^"]*"/, `fill="${t.live}"`);
-	return frame({ bg: t.bgLive, icon: `<g stroke="${t.live}">${red}</g>`, label: kind === "live" ? "Live" : kind === "connecting" ? "Connecting" : "Reconnecting" });
+	return frame({ bg: t.bgLive, icon: `<g stroke="${t.live}">${red}</g>`, label: "Stop", sub: kind === "live" ? "Live" : kind === "connecting" ? "Connecting" : "Reconnecting", untitled });
 }
 
-export function visibleKey(name: string, visible: boolean | undefined): string {
-	if (visible === undefined) return frame({ bg: t.bgDim, icon: eyeShut, label: name || "Source", sub: "Not in scene", dim: true });
-	return frame({ bg: t.bg, icon: visible ? eyeOpen : eyeShut, label: name || "Source", dim: !visible });
+export function visibleKey(name: string, visible: boolean | undefined, untitled = false): string {
+	if (visible === undefined) return frame({ bg: t.bgDim, icon: eyeShut, label: name || "Source", sub: "Not in scene", dim: true, untitled });
+	return frame({ bg: t.bg, icon: visible ? eyeOpen : eyeShut, label: name || "Source", dim: !visible, untitled });
 }
 
-export function muteKey(name: string, muted: boolean | undefined): string {
-	if (muted === undefined) return frame({ bg: t.bg, icon: speaker, label: name || "Mute", dim: true });
-	return frame({ bg: muted ? t.bgDim : t.bg, icon: muted ? speakerOff : speakerOn, label: name || "Mute", dim: muted });
+export function muteKey(name: string, muted: boolean | undefined, untitled = false): string {
+	if (muted === undefined) return frame({ bg: t.bg, icon: speaker, label: name || "Mute", dim: true, untitled });
+	return frame({ bg: muted ? t.bgDim : t.bg, icon: muted ? speakerOff : speakerOn, label: name || "Mute", dim: muted, untitled });
 }
 
 /** A key whose link to RBS is down. */
@@ -97,4 +101,13 @@ export function linkKey(text: LinkText): string {
 
 export function toDataUrl(svg: string): string {
 	return `data:image/svg+xml;charset=utf8,${encodeURIComponent(svg)}`;
+}
+
+/** Pause or resume a recording. */
+export function pauseKey(kind: "idle" | "recording" | "paused", untitled = false): string {
+	const bars = `<path d="M22 16v28M42 16v28"/>`;
+	const play = `<path d="M24 14l26 16-26 16z"/>`;
+	if (kind === "idle") return frame({ bg: t.bgDim, icon: bars, label: "Pause", dim: true, untitled });
+	if (kind === "paused") return frame({ bg: t.bgLive, icon: play, label: "Resume", untitled });
+	return frame({ bg: t.bg, icon: bars, label: "Pause", untitled });
 }

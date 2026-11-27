@@ -70,10 +70,10 @@ describe("renderKey", () => {
 		expect(svg("stream", {}, state, { state: "no_token" })).toContain(">Set token<");
 	});
 	it("record and stream follow their state", () => {
-		expect(svg("record", {})).toContain("Recording");
+		expect(svg("record", {})).toContain(">Stop<");
 		expect(svg("record", {}, { ...state, record: { state: "idle" } })).toContain("Record");
-		expect(svg("stream", {})).toContain("Live");
-		expect(svg("stream", {}, { ...state, stream: { state: "live", connected: false, connects: 2 } })).toContain("Reconnecting");
+		expect(svg("stream", {})).toContain(">Live<");
+		expect(svg("stream", {}, { ...state, stream: { state: "live", connected: false, connects: 2 } })).toContain(">Reconnecting<");
 	});
 	it("a source outside the program scene is marked", () => {
 		expect(svg("source-visible", { source: "8" })).toContain("Not in scene");
@@ -100,6 +100,8 @@ describe("press", () => {
 		expect(calls()).toEqual({ method: "scene.switch", params: { scene: 1 } });
 		await press("record", {}, client);
 		expect(calls()).toEqual({ method: "record.start", params: { profile: "p1" } });
+		await press("record-pause", {}, client); // not recording: nothing is sent
+		expect(calls()?.method).toBe("record.start");
 		await press("stream", {}, client);
 		expect(calls()?.method).toBe("stream.start");
 		await press("source-visible", { source: "7" }, client);

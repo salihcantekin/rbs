@@ -1,4 +1,4 @@
-import streamDeck, { type DidReceiveSettingsEvent, type KeyDownEvent, type SendToPluginEvent, SingletonAction, type WillAppearEvent, type WillDisappearEvent } from "@elgato/streamdeck";
+import streamDeck, { type DidReceiveSettingsEvent, type TitleParametersDidChangeEvent, type KeyDownEvent, type SendToPluginEvent, SingletonAction, type WillAppearEvent, type WillDisappearEvent } from "@elgato/streamdeck";
 
 import type { JsonObject } from "@elgato/utils";
 import { toDataUrl } from "../pictures/pictures.js";
@@ -12,6 +12,8 @@ const instances = new Set<RbsKeyAction>();
 const shown = new Map<string, string>();
 const known = new Map<string, { settings: Settings; action: WillAppearEvent["action"] }>();
 const lastError = new Map<string, string>();
+/** Keys whose user set a Stream Deck title: the app draws it, so the picture has no text. */
+const titled = new Set<string>();
 const busy = new Set<string>();
 let tick: ReturnType<typeof setInterval> | undefined;
 
@@ -20,7 +22,7 @@ function repaintAll(): void {
 	for (const [id, { settings, action }] of known) {
 		const kind = [...instances].find((i) => i.actions.some((a) => a.id === id))?.kind;
 		if (!kind || !action.isKey()) continue;
-		const svg = toDataUrl(renderKey(kind, settings, client.status, client.state as unknown as ViewState, elapsed, now));
+		const svg = toDataUrl(renderKey(kind, settings, client.status, client.state as unknown as ViewState, elapsed, now, titled.has(id)));
 		if (shown.get(id) === svg) continue;
 		shown.set(id, svg);
 		void action.setImage(svg);
@@ -58,10 +60,11 @@ async function sendLists(): Promise<void> {
 				: linkText(link).title + ".";
 	await streamDeck.ui.sendToPropertyInspector({ event: "status", status, error: err ?? "" });
 	await streamDeck.ui.sendToPropertyInspector({ event: "getScenes", items: items(s.scenes?.scenes ?? []) });
-	const sources = (s.sources ?? []).filter((x) => x.item !== undefined);
-	await streamDeck.ui.sendToPropertyInspector({ event: "getSources", items: items(sources) });
-	await streamDeck.ui.sendToPropertyInspector({ event: "getMuteTargets", items: [{ label: "Master", value: "master" }, ...items(s.sources ?? [])] });
-	await streamDeck.ui.sendToPropertyInspector({ event: "getProfiles", items: items(s.profiles ?? []) });
+	// Every source of the collection, not only the scene on air: a key for a source that is
+	// not in the scene on air does nothing until it is.
+	const all = items(s.scenes?.sources ?? s.sources ?? []);
+	await streamDeck.ui.sendToPropertyInspector({ event: "getSources", items: all });
+	await streamDeck.ui.sendToPropertyInspector({ event: "getMuteTargets", items: [{ label: "Master", value: "master" }, ...all] });
 }
 
 client.onStatus(repaintAll);
@@ -86,6 +89,7 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 		known.delete(ev.action.id);
 		shown.delete(ev.action.id);
 		lastError.delete(ev.action.id);
+		titled.delete(ev.action.id);
 		lease.release(ev.action.id);
 		updateTick();
 	}
@@ -93,6 +97,13 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 	override onDidReceiveSettings(ev: DidReceiveSettingsEvent<JsonObject>): void {
 		const k = known.get(ev.action.id);
 		if (k) k.settings = ev.payload.settings as Settings;
+		shown.delete(ev.action.id);
+		repaintAll();
+	}
+
+	override onTitleParametersDidChange(ev: TitleParametersDidChangeEvent<JsonObject>): void {
+		if (ev.payload.title) titled.add(ev.action.id);
+		else titled.delete(ev.action.id);
 		shown.delete(ev.action.id);
 		repaintAll();
 	}

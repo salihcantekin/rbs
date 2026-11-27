@@ -1,11 +1,11 @@
 // Writes an HTML sheet of every key picture state, for the owner's approval of the visuals.
 // Run: npx vite-node scripts/preview.ts <out.html>
 import { writeFileSync } from "node:fs";
-import { linkKey, muteKey, recordKey, sceneKey, streamKey, visibleKey } from "../src/pictures/pictures.js";
+import { pauseKey, linkKey, muteKey, recordKey, sceneKey, streamKey, visibleKey } from "../src/pictures/pictures.js";
 
 const groups: [string, string[]][] = [
 	["Scene", [sceneKey("Main camera", true, false), sceneKey("Chat", false, false), sceneKey("Old scene", false, true)]],
-	["Record", [recordKey("idle"), recordKey("recording", "12:34"), recordKey("paused", "12:34")]],
+	["Record and pause", [recordKey("idle"), recordKey("recording", "12:34"), pauseKey("recording"), pauseKey("paused")]],
 	["Stream", [streamKey("idle"), streamKey("connecting"), streamKey("live"), streamKey("reconnecting")]],
 	["Show / hide source", [visibleKey("Camera", true), visibleKey("Camera", false), visibleKey("Overlay", undefined)]],
 	["Mute", [muteKey("Mic", false), muteKey("Mic", true), muteKey("Master", false)]],
