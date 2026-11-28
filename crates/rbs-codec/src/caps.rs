@@ -11,6 +11,8 @@ pub use rbs_core::registry::HARDWARE;
 pub const VIDEO_ENCODE: CapabilityKey = CapabilityKey::new_static("codec.video.encode");
 /// Set: audio codecs the adapter encodes (`aac`, `opus`, `pcm`, `flac`).
 pub const AUDIO_ENCODE: CapabilityKey = CapabilityKey::new_static("codec.audio.encode");
+/// Set: audio codecs the adapter decodes from live packets (`opus`).
+pub const AUDIO_DECODE: CapabilityKey = CapabilityKey::new_static("codec.audio.decode");
 /// Set: `<codec>.<profile>` names, for example `h264.high`, `hevc.main10`.
 pub const VIDEO_PROFILES: CapabilityKey = CapabilityKey::new_static("codec.video.profiles");
 /// Set: bit depths, `8` and/or `10`.
