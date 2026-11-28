@@ -7,7 +7,8 @@ use std::collections::VecDeque;
 use rbs_codec::caps;
 use rbs_codec::conformance::{self, DecodeClip};
 use rbs_codec::{
-    CreateError, DecodeError, DecoderStats, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory,
+    CreateError, DecoderStats, VideoDecodeError, VideoDecoder, VideoDecoderConfig,
+    VideoDecoderFactory,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -75,27 +76,27 @@ impl VideoDecoder for Fake {
         self.have_size
             .then(|| VideoFormat::new(SIZE, PixelFormat::Nv12, ColorSpace::BT709_LIMITED))
     }
-    fn submit(&mut self, p: &EncodedPacket) -> Result<(), DecodeError> {
+    fn submit(&mut self, p: &EncodedPacket) -> Result<(), VideoDecodeError> {
         if p.codec() != CodecId::H264 && self.fault != Fault::AcceptsForeignCodec {
-            return Err(DecodeError::InvalidInput("codec".into()));
+            return Err(VideoDecodeError::InvalidInput("codec".into()));
         }
         if p.keyframe() {
             // The fake bitstream: width and height as two big-endian u16.
             let d = p.data();
             if d.len() < 4 {
-                return Err(DecodeError::InvalidInput("short".into()));
+                return Err(VideoDecodeError::InvalidInput("short".into()));
             }
             let (w, h) = (
                 u32::from(d[0]) << 8 | u32::from(d[1]),
                 u32::from(d[2]) << 8 | u32::from(d[3]),
             );
             if self.fault != Fault::IgnoresMaxSize && (w > self.max.width || h > self.max.height) {
-                return Err(DecodeError::InvalidInput("too large".into()));
+                return Err(VideoDecodeError::InvalidInput("too large".into()));
             }
             self.have_key = true;
             self.have_size = true;
         } else if !self.have_key && self.fault != Fault::DecodesBeforeKeyframe {
-            return Err(DecodeError::NeedKeyframe);
+            return Err(VideoDecodeError::NeedKeyframe);
         }
         let format = VideoFormat::new(SIZE, PixelFormat::Nv12, ColorSpace::BT709_LIMITED);
         let data = Bytes::from(vec![0u8; 64 * 48 * 3 / 2]);
@@ -123,7 +124,7 @@ impl VideoDecoder for Fake {
         self.queue.push_back(VideoFrame::system(pts, frame, None));
         Ok(())
     }
-    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
+    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError> {
         out.extend(self.queue.drain(..));
         Ok(())
     }
@@ -133,12 +134,12 @@ impl VideoDecoder for Fake {
         s.need_keyframe = !self.have_key;
         s
     }
-    fn reset(&mut self) -> Result<(), DecodeError> {
+    fn reset(&mut self) -> Result<(), VideoDecodeError> {
         self.queue.clear();
         self.have_key = self.fault == Fault::ResetDoesNotGate && self.have_key;
         Ok(())
     }
-    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
+    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError> {
         self.drain(out)?;
         if self.fault != Fault::FlushKeepsSession {
             self.have_key = false;

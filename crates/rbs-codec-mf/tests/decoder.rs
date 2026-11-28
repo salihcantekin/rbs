@@ -8,8 +8,8 @@
 
 use rbs_codec::conformance::{self, DecodeClip};
 use rbs_codec::{
-    CreateError, DecodeError, DecodeOutput, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory,
-    caps,
+    CreateError, DecodeOutput, VideoDecodeError, VideoDecoder, VideoDecoderConfig,
+    VideoDecoderFactory, caps,
 };
 use rbs_codec_mf::MfH264DecoderFactory;
 use rbs_codec_mf::decode::MfH264Decoder;
@@ -298,11 +298,11 @@ fn hostile_bytes_give_typed_errors_and_decoding_continues() {
             match d.submit(&p) {
                 Ok(())
                 | Err(
-                    DecodeError::InvalidInput(_)
-                    | DecodeError::Unsupported(_)
-                    | DecodeError::NeedKeyframe,
+                    VideoDecodeError::InvalidInput(_)
+                    | VideoDecodeError::Unsupported(_)
+                    | VideoDecodeError::NeedKeyframe,
                 ) => {}
-                Err(DecodeError::Failed { .. }) if round == platform_case => {}
+                Err(VideoDecodeError::Failed { .. }) if round == platform_case => {}
                 Err(e) => panic!("case {round}: unexpected {e:?}"),
             }
             let _ = d.drain(&mut out);
@@ -365,10 +365,13 @@ fn a_mid_stream_sps_above_max_size_is_refused_and_gates() {
     decode(&mut d, &clip.packets[..2], &mut frames);
     assert!(matches!(
         d.submit(&big[0]),
-        Err(DecodeError::InvalidInput(_))
+        Err(VideoDecodeError::InvalidInput(_))
     ));
     assert!(d.stats().need_keyframe);
-    assert_eq!(d.submit(&clip.packets[2]), Err(DecodeError::NeedKeyframe));
+    assert_eq!(
+        d.submit(&clip.packets[2]),
+        Err(VideoDecodeError::NeedKeyframe)
+    );
     // The refused packet left the format alone, and a keyframe resumes decoding.
     assert_eq!(d.output_format().map(|f| f.size), Some(Size::new(W, H)));
     d.drain(&mut frames).unwrap();

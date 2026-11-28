@@ -88,10 +88,10 @@ impl fmt::Display for EncodeError {
 
 impl std::error::Error for EncodeError {}
 
-/// Why a decoder call failed.
+/// Why a video decoder call failed.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecodeError {
+pub enum VideoDecodeError {
     /// The packet does not match the session (codec, framing), is malformed, or
     /// asks for a size above the session's limit. The packet was not decoded.
     InvalidInput(String),
@@ -120,31 +120,33 @@ pub enum DecodeError {
     },
 }
 
-impl DecodeError {
+impl VideoDecodeError {
     /// True when the session can continue.
     pub const fn is_recoverable(&self) -> bool {
         match self {
-            DecodeError::InvalidInput(_) | DecodeError::NeedKeyframe | DecodeError::Busy => true,
-            DecodeError::Unsupported(_) | DecodeError::FormatChanged | DecodeError::DeviceLost => {
-                false
-            }
-            DecodeError::Failed { recoverable, .. } => *recoverable,
+            VideoDecodeError::InvalidInput(_)
+            | VideoDecodeError::NeedKeyframe
+            | VideoDecodeError::Busy => true,
+            VideoDecodeError::Unsupported(_)
+            | VideoDecodeError::FormatChanged
+            | VideoDecodeError::DeviceLost => false,
+            VideoDecodeError::Failed { recoverable, .. } => *recoverable,
         }
     }
 }
 
-impl fmt::Display for DecodeError {
+impl fmt::Display for VideoDecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecodeError::InvalidInput(e) => write!(f, "invalid input: {e}"),
-            DecodeError::NeedKeyframe => f.write_str("waiting for a keyframe"),
-            DecodeError::Busy => f.write_str("decoder queue full"),
-            DecodeError::Unsupported(e) => write!(f, "unsupported stream: {e}"),
-            DecodeError::FormatChanged => f.write_str("stream format changed"),
-            DecodeError::DeviceLost => f.write_str("device lost"),
-            DecodeError::Failed { reason, .. } => write!(f, "decode failed: {reason}"),
+            VideoDecodeError::InvalidInput(e) => write!(f, "invalid input: {e}"),
+            VideoDecodeError::NeedKeyframe => f.write_str("waiting for a keyframe"),
+            VideoDecodeError::Busy => f.write_str("decoder queue full"),
+            VideoDecodeError::Unsupported(e) => write!(f, "unsupported stream: {e}"),
+            VideoDecodeError::FormatChanged => f.write_str("stream format changed"),
+            VideoDecodeError::DeviceLost => f.write_str("device lost"),
+            VideoDecodeError::Failed { reason, .. } => write!(f, "decode failed: {reason}"),
         }
     }
 }
 
-impl std::error::Error for DecodeError {}
+impl std::error::Error for VideoDecodeError {}

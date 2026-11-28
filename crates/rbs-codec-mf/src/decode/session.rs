@@ -7,7 +7,7 @@ use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rbs_codec::h264::{self, NAL_IDR, NAL_PPS, NAL_SPS, Sps, SpsError};
-use rbs_codec::{CreateError, DecodeError, DecoderStats, VideoDecoder, VideoDecoderConfig};
+use rbs_codec::{CreateError, DecoderStats, VideoDecodeError, VideoDecoder, VideoDecoderConfig};
 use rbs_core::log::Area;
 use rbs_core::media::{
     BitstreamFormat, Bytes, CodecId, EncodedPacket, MemoryKind, PixelFormat, PlaneLayout, Size,
@@ -104,17 +104,17 @@ pub struct MfH264Decoder {
 // touch only the pool's atomics.
 unsafe impl Send for MfH264Decoder {}
 
-fn invalid(what: &str) -> DecodeError {
-    DecodeError::InvalidInput(what.into())
+fn invalid(what: &str) -> VideoDecodeError {
+    VideoDecodeError::InvalidInput(what.into())
 }
 
-fn unsupported(what: &str) -> DecodeError {
-    DecodeError::Unsupported(what.into())
+fn unsupported(what: &str) -> VideoDecodeError {
+    VideoDecodeError::Unsupported(what.into())
 }
 
 /// Not decoded, but the session continues (keyframe gating follows).
-fn skipped(what: &str) -> DecodeError {
-    DecodeError::Failed {
+fn skipped(what: &str) -> VideoDecodeError {
+    VideoDecodeError::Failed {
         reason: what.into(),
         recoverable: true,
     }
@@ -225,7 +225,7 @@ impl MfH264Decoder {
 
     /// Takes pictures out of the MFT until it needs input. A stream change is handled
     /// here (new output type) and is not an error.
-    fn pull(&mut self) -> Result<(), DecodeError> {
+    fn pull(&mut self) -> Result<(), VideoDecodeError> {
         for _ in 0..MAX_OUTPUTS_PER_PULL {
             let ours = if self.provides {
                 None
@@ -287,7 +287,7 @@ impl MfH264Decoder {
         self.pending.pop_front()
     }
 
-    fn picture(&mut self, sample: &IMFSample) -> Result<(), DecodeError> {
+    fn picture(&mut self, sample: &IMFSample) -> Result<(), VideoDecodeError> {
         // SAFETY: a plain read on a live sample.
         let time = unsafe { sample.GetSampleTime() }.ok();
         let Some(entry) = self.take_pending(time) else {
@@ -322,7 +322,11 @@ impl MfH264Decoder {
 
     /// Copies the cropped NV12 picture of `sample` to system memory (P4, counted). A
     /// new buffer per picture: this is the fallback path.
-    fn system_copy(&self, sample: &IMFSample, at: Placement) -> Result<VideoFrame, DecodeError> {
+    fn system_copy(
+        &self,
+        sample: &IMFSample,
+        at: Placement,
+    ) -> Result<VideoFrame, VideoDecodeError> {
         let layout = self.layout.ok_or_else(|| skipped("no output type"))?;
         if !at.fits(layout.width, layout.height) || layout.stride < layout.width {
             return Err(skipped("picture outside the output type"));
@@ -387,7 +391,7 @@ impl MfH264Decoder {
     }
 
     /// Checks the packet's NAL units and its SPS (backend-ports.md invariant 2).
-    fn inspect(&self, data: &[u8]) -> Result<Seen, DecodeError> {
+    fn inspect(&self, data: &[u8]) -> Result<Seen, VideoDecodeError> {
         let mut seen = Seen::default();
         let mut any = false;
         for nal in h264::nal_units(data) {
@@ -416,7 +420,7 @@ impl MfH264Decoder {
         Ok(seen)
     }
 
-    fn check_sps(&self, nal: &[u8]) -> Result<Sps, DecodeError> {
+    fn check_sps(&self, nal: &[u8]) -> Result<Sps, VideoDecodeError> {
         let sps = match h264::parse_sps(nal) {
             Ok(sps) => sps,
             Err(SpsError::Unsupported(what)) => return Err(unsupported(what)),
@@ -434,7 +438,7 @@ impl MfH264Decoder {
         Ok(sps)
     }
 
-    fn feed(&mut self, packet: &EncodedPacket, keyframe: bool) -> Result<u64, DecodeError> {
+    fn feed(&mut self, packet: &EncodedPacket, keyframe: bool) -> Result<u64, VideoDecodeError> {
         let index = self.next_index;
         let time = i64::try_from(index)
             .unwrap_or(i64::MAX)
@@ -449,18 +453,22 @@ impl MfH264Decoder {
                     return Ok(index);
                 }
                 Err(e) if e.code() == MF_E_NOTACCEPTING && attempt == 0 => self.pull()?,
-                Err(e) if e.code() == MF_E_NOTACCEPTING => return Err(DecodeError::Busy),
+                Err(e) if e.code() == MF_E_NOTACCEPTING => return Err(VideoDecodeError::Busy),
                 Err(e) => return Err(failed("decode", &e)),
             }
         }
-        Err(DecodeError::Busy)
+        Err(VideoDecodeError::Busy)
     }
 
     /// Feeds a packet; an error other than `Busy` gates on the next keyframe.
-    fn feed_or_gate(&mut self, packet: &EncodedPacket, keyframe: bool) -> Result<u64, DecodeError> {
+    fn feed_or_gate(
+        &mut self,
+        packet: &EncodedPacket,
+        keyframe: bool,
+    ) -> Result<u64, VideoDecodeError> {
         let index = match self.feed(packet, keyframe) {
             Ok(index) => index,
-            Err(DecodeError::Busy) => return Err(DecodeError::Busy),
+            Err(VideoDecodeError::Busy) => return Err(VideoDecodeError::Busy),
             Err(e) => {
                 self.fail_stream();
                 return Err(e);
@@ -476,7 +484,7 @@ impl VideoDecoder for MfH264Decoder {
             .map(|s| VideoFormat::new(s.size, PixelFormat::Nv12, super::color_of(s.color)))
     }
 
-    fn submit(&mut self, packet: &EncodedPacket) -> Result<(), DecodeError> {
+    fn submit(&mut self, packet: &EncodedPacket) -> Result<(), VideoDecodeError> {
         if packet.codec() != CodecId::H264 || packet.bitstream() != BitstreamFormat::AnnexB {
             return Err(invalid("not an H.264 Annex B packet"));
         }
@@ -487,7 +495,7 @@ impl VideoDecoder for MfH264Decoder {
                 // A refused SPS or slice leaves the decoder without a valid reference.
                 let carries = h264::nal_units(data)
                     .any(|n| matches!(h264::nal_type(n), Some(NAL_SLICE | NAL_IDR | NAL_SPS)));
-                if carries || matches!(e, DecodeError::Unsupported(_)) {
+                if carries || matches!(e, VideoDecodeError::Unsupported(_)) {
                     self.gate();
                 }
                 return Err(e);
@@ -509,10 +517,10 @@ impl VideoDecoder for MfH264Decoder {
         let Some(sps) =
             sps.filter(|_| !self.gated || (seen.idr && (seen.pps || self.sps.is_some())))
         else {
-            return Err(DecodeError::NeedKeyframe);
+            return Err(VideoDecodeError::NeedKeyframe);
         };
         if self.pending.len() >= QUEUE {
-            return Err(DecodeError::Busy);
+            return Err(VideoDecodeError::Busy);
         }
         let index = self.feed_or_gate(packet, seen.idr)?;
         self.pending.push_back(Pending {
@@ -529,7 +537,7 @@ impl VideoDecoder for MfH264Decoder {
         self.pull().inspect_err(|_| self.fail_stream())
     }
 
-    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
+    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError> {
         let pulled = self.pull();
         out.append(&mut self.ready);
         if pulled.is_err() {
@@ -538,14 +546,14 @@ impl VideoDecoder for MfH264Decoder {
         pulled
     }
 
-    fn reset(&mut self) -> Result<(), DecodeError> {
+    fn reset(&mut self) -> Result<(), VideoDecodeError> {
         self.gate();
         self.pending.clear();
         self.ready.clear();
         mft::flush(&self.mft).map_err(|e| failed("flush", &e))
     }
 
-    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
+    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError> {
         // SAFETY: plain messages to the live MFT.
         let drained = unsafe {
             self.mft

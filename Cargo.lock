@@ -5842,6 +5842,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec-opus"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-codec-pcm"
 version = "0.0.1"
 dependencies = [

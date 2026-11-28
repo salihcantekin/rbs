@@ -26,9 +26,9 @@ use crate::caps;
 use crate::config::{
     AudioEncoderConfig, EncoderChange, KeyframeInterval, RateControl, VideoEncoderConfig,
 };
-use crate::decoder::{VideoDecoderConfig, VideoDecoderFactory};
 use crate::encoder::{AudioEncoder, AudioEncoderFactory, VideoEncoder, VideoEncoderFactory};
-use crate::error::{CreateError, DecodeError, EncodeError};
+use crate::error::{CreateError, EncodeError, VideoDecodeError};
+use crate::video_decoder::{VideoDecoderConfig, VideoDecoderFactory};
 
 /// Supplies input frames for the video suite in the memory kind the adapter takes.
 ///
@@ -834,7 +834,7 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         report.check(
             "delta-before-keyframe",
             match r {
-                Ok(Err(DecodeError::NeedKeyframe)) => Ok(()),
+                Ok(Err(VideoDecodeError::NeedKeyframe)) => Ok(()),
                 Ok(other) => Err(format!("expected NeedKeyframe, got {other:?}")),
                 Err(e) => Err(e),
             },
@@ -905,7 +905,7 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
                 return Err("stats.need_keyframe false right after reset".into());
             }
             let after_reset = decoder.submit(delta);
-            if after_reset != Err(DecodeError::NeedKeyframe) {
+            if after_reset != Err(VideoDecodeError::NeedKeyframe) {
                 return Err(format!("after reset a delta gave {after_reset:?}"));
             }
             let frames = decode_all(decoder.as_mut(), &clip.packets)?;
@@ -930,7 +930,7 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
     report
 }
 
-type Decoder<'a> = &'a mut dyn crate::decoder::VideoDecoder;
+type Decoder<'a> = &'a mut dyn crate::video_decoder::VideoDecoder;
 
 fn lookahead_case(decoder: Decoder<'_>, clip: &DecodeClip) -> Result<(), String> {
     guarded(|| {
@@ -1029,7 +1029,7 @@ fn foreign_and_size_cases(
         let r = guarded(|| {
             decoder.reset().map_err(|e| e.to_string())?;
             match decoder.submit(&foreign) {
-                Err(DecodeError::InvalidInput(_)) => {}
+                Err(VideoDecodeError::InvalidInput(_)) => {}
                 other => return Err(format!("expected InvalidInput, got {other:?}")),
             }
             let frames = decode_all(decoder, &clip.packets)?;
@@ -1046,11 +1046,11 @@ fn foreign_and_size_cases(
     let r = guarded(|| {
         let mut d = factory.create(&small).map_err(|e| e.to_string())?;
         match d.submit(key) {
-            Err(DecodeError::InvalidInput(_) | DecodeError::Unsupported(_)) => {}
+            Err(VideoDecodeError::InvalidInput(_) | VideoDecodeError::Unsupported(_)) => {}
             other => return Err(format!("a picture over max_size gave {other:?}")),
         }
         if let Some(delta) = delta
-            && d.submit(delta) != Err(DecodeError::NeedKeyframe)
+            && d.submit(delta) != Err(VideoDecodeError::NeedKeyframe)
         {
             return Err("a delta after a refused keyframe was not NeedKeyframe".into());
         }
@@ -1101,7 +1101,7 @@ fn check_frames(frames: &[Seen], clip: &DecodeClip) -> Result<(), String> {
 }
 
 fn decode_all(
-    decoder: &mut dyn crate::decoder::VideoDecoder,
+    decoder: &mut dyn crate::video_decoder::VideoDecoder,
     packets: &[EncodedPacket],
 ) -> Result<Vec<Seen>, String> {
     let mut seen = Vec::with_capacity(packets.len());

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rbs_capture::handoff::{Grave, Graveyard, Ring};
-use rbs_codec::DecodeError;
+use rbs_codec::VideoDecodeError;
 use rbs_core::media::{
     D3dApi, Lease, LeaseOwner, NativeSurface, PixelFormat, Size, SurfaceSync, VideoFormat,
     VideoFrame,
@@ -67,8 +67,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
-fn device_error(what: &str, e: &windows::core::Error) -> DecodeError {
-    DecodeError::Failed {
+fn device_error(what: &str, e: &windows::core::Error) -> VideoDecodeError {
+    VideoDecodeError::Failed {
         reason: format!("{what}: {e}"),
         recoverable: false,
     }
@@ -167,7 +167,7 @@ impl Gpu {
     /// A decode device with `slots` pool slots on the adapter of `luid`, or an error
     /// when the adapter is gone or lacks D3D11 video support or fences (the caller
     /// decodes to system memory instead). Slot textures are made on first use.
-    pub(crate) fn new(luid: u64, slots: usize) -> Result<Self, DecodeError> {
+    pub(crate) fn new(luid: u64, slots: usize) -> Result<Self, VideoDecodeError> {
         let adapter = adapter_for(luid).map_err(|e| device_error("render adapter", &e))?;
         let mut device = None;
         let mut immediate = None;
@@ -252,7 +252,7 @@ impl Gpu {
         &mut self,
         sample: &IMFSample,
         at: Placement,
-    ) -> Result<GpuPicture, DecodeError> {
+    ) -> Result<GpuPicture, VideoDecodeError> {
         let size = at.size;
         // SAFETY: plain calls on a live sample and its buffer; `GetResource` writes an
         // owned reference of the requested interface, which `from_raw` takes over.
@@ -311,7 +311,7 @@ impl Gpu {
         source: &ID3D11Texture2D,
         subresource: u32,
         at: Placement,
-    ) -> Result<u64, DecodeError> {
+    ) -> Result<u64, VideoDecodeError> {
         let size = at.size;
         let mut textures = lock(&self.pool.textures);
         let entry = textures
@@ -364,7 +364,7 @@ impl Gpu {
     }
 
     /// Signals the fence after the work queued so far and waits for it.
-    fn wait_for_gpu(&mut self) -> Result<(), DecodeError> {
+    fn wait_for_gpu(&mut self) -> Result<(), VideoDecodeError> {
         self.fence_value += 1;
         // SAFETY: plain calls on the live context, fence and event; the device is
         // multithread protected.
@@ -377,7 +377,7 @@ impl Gpu {
                 .SetEventOnCompletion(self.fence_value, self.event)
                 .map_err(|e| failed("fence", &e))?;
             if WaitForSingleObject(self.event, COPY_WAIT_MS) != WAIT_OBJECT_0 {
-                return Err(DecodeError::DeviceLost);
+                return Err(VideoDecodeError::DeviceLost);
             }
         }
         Ok(())
