@@ -841,75 +841,9 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         );
     }
 
-    // Hostile input: typed errors, no panic, and the session still decodes the clip.
-    let garbage: Vec<(&str, Vec<u8>)> = vec![
-        ("empty", Vec::new()),
-        ("zeros", vec![0; 64]),
-        ("no-start-code", vec![0x41; 200]),
-        (
-            "truncated-keyframe",
-            key.data().iter().take(9).copied().collect(),
-        ),
-        ("only-start-code", vec![0, 0, 0, 1]),
-        (
-            "huge-nal-type",
-            vec![0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff],
-        ),
-    ];
-    let r = guarded(|| {
-        for (name, bytes) in &garbage {
-            for keyframe in [true, false] {
-                let Ok(p) = EncodedPacket::new(
-                    clip.codec,
-                    BitstreamFormat::AnnexB,
-                    key.pts(),
-                    key.pts(),
-                    keyframe,
-                    Bytes::from(bytes.clone()),
-                ) else {
-                    continue;
-                };
-                match decoder.submit(&p) {
-                    Ok(()) | Err(_) => {}
-                }
-                let mut sink = Vec::new();
-                decoder
-                    .drain(&mut sink)
-                    .map_err(|e| format!("drain after {name}: {e}"))?;
-            }
-        }
-        Ok(())
-    });
-    report.check("hostile-input", r);
-    report.check(
-        "decode-after-hostile-input",
-        guarded(|| {
-            decoder.reset().map_err(|e| e.to_string())?;
-            let frames = decode_all(decoder.as_mut(), &clip.packets)?;
-            check_frames(&frames, clip)
-        }),
-    );
+    hostile_cases(&mut report, decoder.as_mut(), clip, &key);
 
-    // Pictures arrive without lookahead beyond what the clip declares.
-    let r = guarded(|| {
-        decoder.reset().map_err(|e| e.to_string())?;
-        let mut seen = 0usize;
-        let mut out = Vec::new();
-        for (i, p) in clip.packets.iter().enumerate() {
-            decoder.submit(p).map_err(|e| e.to_string())?;
-            decoder.drain(&mut out).map_err(|e| e.to_string())?;
-            seen = out.len();
-            if seen + clip.lookahead < i + 1 {
-                return Err(format!(
-                    "after packet {i} only {seen} pictures (lookahead {})",
-                    clip.lookahead
-                ));
-            }
-        }
-        let _ = seen;
-        Ok(())
-    });
-    report.check("no-lookahead", r);
+    report.check("no-lookahead", lookahead_case(decoder.as_mut(), clip));
 
     // The whole clip, bit-exact stamps, format and counters.
     let run = guarded(|| {
@@ -987,6 +921,102 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         );
     }
 
+    foreign_and_size_cases(
+        &mut report,
+        factory,
+        decoder.as_mut(),
+        clip,
+        &key,
+        delta.as_ref(),
+    );
+    report
+}
+
+type Decoder<'a> = &'a mut dyn crate::decoder::VideoDecoder;
+
+fn lookahead_case(decoder: Decoder<'_>, clip: &DecodeClip) -> Result<(), String> {
+    guarded(|| {
+        decoder.reset().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for (i, p) in clip.packets.iter().enumerate() {
+            decoder.submit(p).map_err(|e| e.to_string())?;
+            decoder.drain(&mut out).map_err(|e| e.to_string())?;
+            let seen = out.len();
+            if seen + clip.lookahead < i + 1 {
+                return Err(format!(
+                    "after packet {i} only {seen} pictures (lookahead {})",
+                    clip.lookahead
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+fn hostile_cases(
+    report: &mut Report,
+    decoder: Decoder<'_>,
+    clip: &DecodeClip,
+    key: &EncodedPacket,
+) {
+    // Hostile input: typed errors, no panic, and the session still decodes the clip.
+    let garbage: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", Vec::new()),
+        ("zeros", vec![0; 64]),
+        ("no-start-code", vec![0x41; 200]),
+        (
+            "truncated-keyframe",
+            key.data().iter().take(9).copied().collect(),
+        ),
+        ("only-start-code", vec![0, 0, 0, 1]),
+        (
+            "huge-nal-type",
+            vec![0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff],
+        ),
+    ];
+    let r = guarded(|| {
+        for (name, bytes) in &garbage {
+            for keyframe in [true, false] {
+                let Ok(p) = EncodedPacket::new(
+                    clip.codec,
+                    BitstreamFormat::AnnexB,
+                    key.pts(),
+                    key.pts(),
+                    keyframe,
+                    Bytes::from(bytes.clone()),
+                ) else {
+                    continue;
+                };
+                match decoder.submit(&p) {
+                    Ok(()) | Err(_) => {}
+                }
+                let mut sink = Vec::new();
+                decoder
+                    .drain(&mut sink)
+                    .map_err(|e| format!("drain after {name}: {e}"))?;
+            }
+        }
+        Ok(())
+    });
+    report.check("hostile-input", r);
+    report.check(
+        "decode-after-hostile-input",
+        guarded(|| {
+            decoder.reset().map_err(|e| e.to_string())?;
+            let frames = decode_all(decoder, &clip.packets)?;
+            check_frames(&frames, clip)
+        }),
+    );
+}
+
+fn foreign_and_size_cases(
+    report: &mut Report,
+    factory: &dyn VideoDecoderFactory,
+    decoder: Decoder<'_>,
+    clip: &DecodeClip,
+    key: &EncodedPacket,
+    delta: Option<&EncodedPacket>,
+) {
     // Another codec is refused, and the session still decodes afterwards.
     if let Ok(foreign) = EncodedPacket::new(
         CodecId::Aac,
@@ -1002,7 +1032,7 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
                 Err(DecodeError::InvalidInput(_)) => {}
                 other => return Err(format!("expected InvalidInput, got {other:?}")),
             }
-            let frames = decode_all(decoder.as_mut(), &clip.packets)?;
+            let frames = decode_all(decoder, &clip.packets)?;
             check_frames(&frames, clip)
         });
         report.check("foreign-codec", r);
@@ -1015,11 +1045,11 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
     ));
     let r = guarded(|| {
         let mut d = factory.create(&small).map_err(|e| e.to_string())?;
-        match d.submit(&key) {
+        match d.submit(key) {
             Err(DecodeError::InvalidInput(_) | DecodeError::Unsupported(_)) => {}
             other => return Err(format!("a picture over max_size gave {other:?}")),
         }
-        if let Some(delta) = &delta
+        if let Some(delta) = delta
             && d.submit(delta) != Err(DecodeError::NeedKeyframe)
         {
             return Err("a delta after a refused keyframe was not NeedKeyframe".into());
@@ -1027,7 +1057,6 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         Ok(())
     });
     report.check("max-size", r);
-    report
 }
 
 fn check_frames(frames: &[VideoFrame], clip: &DecodeClip) -> Result<(), String> {
