@@ -794,6 +794,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-capture-mf"
         | "rbs-capture-pipewire"
         | "rbs-capture-test"
+        | "rbs-peer-str0m"
         | "rbs-segment-vision"
         | "rbs-segment-ort"
         | "rbs-audio-io-coreaudio"

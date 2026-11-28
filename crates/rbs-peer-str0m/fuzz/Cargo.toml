@@ -1,0 +1,28 @@
+# Fuzz targets for the pairing code parsers (ADR-0139 decision 16). Not a workspace
+# member: `cargo fuzz` needs a nightly toolchain. Run from this folder:
+#   cargo +nightly fuzz run code_parser -- -max_total_time=300
+[package]
+name = "rbs-peer-str0m-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rbs-peer = { path = "../../rbs-peer" }
+rbs-peer-str0m = { path = ".." }
+
+[[bin]]
+name = "code_parser"
+path = "fuzz_targets/code_parser.rs"
+test = false
+doc = false
+bench = false
+
+# Kept out of the main workspace.
+[workspace]
+members = ["."]

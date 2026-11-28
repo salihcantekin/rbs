@@ -7,10 +7,14 @@
 //! typed failure reasons. The transport's own part of a code is an opaque payload
 //! owned by its adapter (`rbs-peer-str0m` for WebRTC).
 //!
+//! The `conformance` feature adds the suite every adapter passes ([`conformance`]).
+//!
 //! No network, codec or crypto dependency (principle P1). Contract:
 //! `docs/specs/peer-port.md`.
 
 pub mod code;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 pub mod error;
 pub mod phrase;
 pub mod session;

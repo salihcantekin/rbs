@@ -10,5 +10,10 @@ publish.workspace = true
 
 [dependencies]
 
+[features]
+# The adapter conformance suite (`rbs_peer::conformance`); adapter crates enable it in
+# their dev-dependencies.
+conformance = []
+
 [lints]
 workspace = true

@@ -1,7 +1,7 @@
 # Spec: Peer port (guest pairing)
 
 - Status: Draft, 2026-11-27. Lands with the first code of ADR-0139 phase 1b (`rbs-peer`), before any adapter. Independent review round 1 (2026-11-27, approve with changes, 13 points) applied; see Review at the end.
-- Owner crate(s): `rbs-peer` (port), adapter `rbs-peer-str0m` (planned, phase 1b)
+- Owner crate(s): `rbs-peer` (port), adapter `rbs-peer-str0m` (pairing and connection since 2026-11-27; media path with the guest share output, phase 1b)
 - Related ADRs: [0139](../adr/0139-remote-guests-rbs-to-rbs-over-webrtc.md), [0013](../adr/0013-zero-cost-when-unused.md), [0019](../adr/0019-encode-mux-transport-ports.md), [0046](../adr/0046-network-access-over-tls.md), [0055](../adr/0055-crash-resilience.md)
 - Related specs: [output-ports.md](output-ports.md), [backend-ports.md](backend-ports.md), [control-api.md](control-api.md)
 
@@ -128,7 +128,7 @@ pub trait PeerSession: Send {
 
 `Confirmed` follows `Connected` at once on a side whose check is off. Expiry while gathering or waiting is `InviteState::Failed(Expired)` or `PeerState::Failed(Expired)`.
 
-Media: `MediaHandle` wraps an `Arc` of the adapter's own type and is downcast only by that adapter's code (its `Transport` on the sending side, built by the composition root; its packet reader in the guest source on the receiving side). The sending half is a `Transport` (input = packets); the receiving half gives encoded packets with the sender's master-clock capture time through a bounded lock-free queue. Those types belong to the adapter PR, not to this crate. The adapter enforces the gates: its transport sends nothing and its packet reader yields nothing while its side is not confirmed, and the adapter's tests prove it (ADR-0139 decision 16). A conformance suite in this crate follows with the first adapter, when there is a real session to drive.
+Media: `MediaHandle` wraps an `Arc` of the adapter's own type and is downcast only by that adapter's code (its `Transport` on the sending side, built by the composition root; its packet reader in the guest source on the receiving side). The sending half is a `Transport` (input = packets); the receiving half gives encoded packets with the sender's master-clock capture time through a bounded lock-free queue. Those types belong to the adapter, not to this crate; `rbs-peer-str0m` adds them with the guest share output (its `WebRtcMedia` carries nothing yet). The adapter enforces the gates: its transport sends nothing and its packet reader yields nothing while its side is not confirmed, and the adapter's tests prove it (ADR-0139 decision 16).
 
 ### Failure reasons
 
@@ -162,11 +162,34 @@ Which error for an expired or unknown pairing:
 
 ### Secrets
 
-`PairingCode` holds a code. Its `Debug` and `Display` print `PairingCode(<redacted>)`; the text is read only through `expose()`. While a code is live the composition root registers it with `rbs_crash::add_secret` (ADR-0139 decision 14), and the adapter registers the ICE username fragment and password the same way.
+`PairingCode` holds a code. Its `Debug` and `Display` print `PairingCode(<redacted>)`; the text is read only through `expose()`. While a code is live the composition root registers it with `rbs_crash::add_secret` (ADR-0139 decision 14). The adapter registers the ICE username fragments and passwords of both sides the same way, as soon as it makes or reads them, and removes them with `rbs_crash::remove_secret` when the pairing ends (`rbs_crash` keeps 64 secrets).
 
 ## Tests
 
-In `rbs-peer`: codes round-trip; every malformed field, an oversized code, a newer version, a wrong kind and a wrong session are refused with their typed error; whitespace inside a pasted code is ignored; expiry within the tolerance is accepted and outside it refused; settings bounds; the check phrase is the same for the same input, differs when any input byte differs, matches a fixed test vector, and `phrase_input` is unambiguous (moving a byte between the two fingerprints changes it). A seeded generator round-trips a few thousand random envelopes (no new dependency). The adapter's tests (in-memory network on `TestClock`, NAT expiry, consent loss) are listed in ADR-0139 decision 16. The adapter PR adds the fuzz target for `Envelope::decode` (ADR-0139 decision 16) and the tests of its payload bounds (at most 8 candidates), which this port cannot see.
+In `rbs-peer`: codes round-trip; every malformed field, an oversized code, a newer version, a wrong kind and a wrong session are refused with their typed error; whitespace inside a pasted code is ignored; expiry within the tolerance is accepted and outside it refused; settings bounds; the check phrase is the same for the same input, differs when any input byte differs, matches a fixed test vector, and `phrase_input` is unambiguous (moving a byte between the two fingerprints changes it). A seeded generator round-trips a few thousand random envelopes (no new dependency). The adapter's tests (in-memory network on `TestClock`, NAT expiry, consent loss) are listed in ADR-0139 decision 16. The adapter's own tests, its payload bounds and the fuzz target are listed under the adapter below.
+
+## Conformance suite
+
+`rbs_peer::conformance` (feature `conformance`, enabled from an adapter's dev-dependencies) drives a real factory. The adapter supplies a `Harness`: the factory, settings with which two pairings on one machine connect, and `wait`, which returns once a condition holds (a hang guard only, ADR-0032). `run_all` checks: bad invites (not a code, broken, an answer pasted as an invite, expired) refused at once with their typed error; out-of-range settings refused; a full pairing (the invite waits with its code, the code never prints its text, one session id, the invite takes one answer and refuses a second, only the answerer has an answer code, one phrase, each side unconfirmed until its own user confirms, the events `Connected` then `Confirmed` on the offerer and `AnswerReady`, `Connected`, `Confirmed` on the answerer, a closed session refuses calls); and an answer made for another invite refused as `WrongSession` without using the invite; a closed session yields one `Closed` event; a closed invite takes no answer.
+
+## Adapter: `rbs-peer-str0m` (WebRTC)
+
+Type id `org.rbs.peer.webrtc`, transport `WebRtc`. Built on str0m 0.26 (sans-IO; ADR-0139 decision 2), exact pins on str0m, str0m-proto and dimpl.
+
+- **Crypto.** No str0m crypto feature: each one pulls aws-lc-sys or OpenSSL (ADR-0046). The adapter's private `crypto` module is adapted from `str0m-rust-crypto` 0.7.0 (MIT OR Apache-2.0): DTLS 1.2 through dimpl's RustCrypto backend, SRTP, STUN HMAC-SHA1 and fingerprints on RustCrypto crates, and a fresh self-signed P-256 certificate per pairing through rcgen on ring. `cargo tree -p rbs-peer-str0m` shows no aws-lc or OpenSSL.
+- **Fingerprint.** A code's SDP may carry its DTLS fingerprint at session or media level, but every fingerprint line must be SHA-256 and name the same digest, or the code is `Malformed`. str0m checks a media-level fingerprint before the session-level one, so two different ones would let the phrase cover a certificate DTLS never checks.
+- **Answer checks.** Before str0m sees an answer, the adapter checks its fingerprint, its ICE credentials and that it has as many media sections as the offer; str0m consumes the pending offer even when it refuses an answer, so a damaged or foreign answer is refused this way and the invite keeps waiting for the right one.
+- **Payload.** Version byte `1`, then the raw-deflate SDP (`miniz_oxide`). Decoding stops at 16 KiB of SDP (no deflate bomb) and refuses more than 8 candidates. The SDP offers only H.264 and Opus and three header extensions (MID, absolute capture time, transport-wide sequence number). A code is about 1.5 KB with one candidate; one with 8 long IPv6 candidates stays under the 4 KiB limit (tested).
+- **Engine.** `engine::Engine` is sans-IO: phases Gathering, Waiting (offerer with a code), Connecting, Connected { confirmed }, Failed, Closed. Gathering sends STUN binding requests (the adapter's own client, `stun`), ends at the gathering timeout, when a server reports this side's public address, or when every server stayed silent after its retries, and fails `NoPublicAddress` when private addresses are left out and no server answered. Then:
+  - Keep-alive: a STUN binding refresh every 20 s while a code is pending. The answerer also sends a connectivity check to each of the offerer's candidates every 10 s, so its NAT stays open until the answer is pasted.
+  - Retransmits: ICE checks back off to at most 3 s apart, and their count is capped (str0m shifts by it), so an answer pasted up to its lifetime later still connects.
+  - DTLS handshake timeout: 35 minutes (dimpl's default is 40 s), so the answer's lifetime, not DTLS, bounds the wait.
+  - Expiry: an invite that expires while it waits is `Expired`; a connection attempt that outlives its answer is `Unreachable`.
+  - Consent: 30 s with nothing heard ends the session as `Disconnected`, which is final.
+  - Check off: `Confirmed` follows `Connected` at once.
+- **Threads.** One owner thread per pairing, named `rbs-peer`, started by `create_invite` or `accept_invite` and ended with the pairing (P13). It owns the UDP socket (IPv4, any port) and the engine, wakes at least every 20 ms for commands, and resolves STUN names itself. The control thread reads a small snapshot under a mutex and sends `accept_answer` and `confirm` as commands (each waits at most 2 s for its reply); the thread updates the snapshot before it replies, so a state read right after a call shows its effect. `close` never blocks: it marks the snapshot `Closed` at once and the thread ends at its next turn (it may be inside a DNS lookup). A pairing whose thread ends without an end state, or panics (reported by `rbs_crash`), shows `Failed`. STUN transaction ids come from the system random source; without one the pairing fails instead of starting. `accept_invite` refuses a bad code before any socket or thread exists. The host candidate is the interface of the default route.
+- **Logging.** The adapter logs nothing; the composition root logs pairing life-cycle steps and failure reasons, never a code or credential.
+- **Tests.** Simulated (in-memory network with address-restricted NATs and a STUN server, simulated time, a seeded DTLS random source, so every run is the same): pairing on one network, through NATs with STUN, an answer pasted 2 min 50 s later through NATs, a substituted invite giving different phrases, a second or non-SHA-256 fingerprint refused, a damaged answer leaving the invite waiting, wrong, reused and expired codes, an invite expiring, consent loss, no public address, the check off, an answer never pasted, and ICE credentials handed out as secrets. Payload round trip and bounds; STUN parsing, retries and keep-alive; a seeded mutation test feeding 300 damaged real codes and payloads through the parsers. `tests/slow_loopback.rs` (ignored, `slow_`) runs the conformance suite over real sockets on one machine. The cargo-fuzz target `fuzz/fuzz_targets/code_parser.rs` (nightly, outside the workspace) feeds any bytes to `Envelope::decode`, the payload decoder and the SDP readers.
 
 ## Review
 
@@ -186,3 +209,7 @@ Reviewer: independent AI session. Date: 2026-11-27. Verdict: approve with change
 11. Deferred items need an owner -> adapter PR acceptance (Tests, `docs/status.md`).
 12. `guest_return_feed` placement -> stated under Errors.
 13. Settings naming and invented bounds -> `SideSettings`; minimums marked as this spec's choice.
+
+### Adapter review (2026-11-28)
+
+Independent review of `rbs-peer-str0m` and the conformance suite (a fresh session given only the change, the ADRs and the specs). Round 1: reject, 12 points; round 2: approve. Applied: fingerprint rule (one SHA-256 digest at any level); snapshot updated before each reply; panic or early end leaves a failed state; secrets removed at the end (`rbs_crash::remove_secret`); answers checked before str0m takes the pending offer; random source probed; close does not block; 8-candidate size test; two more conformance checks; `Invite::state` after use. Accepted as is: the thread wakes every 20 ms (phase 1b), the ported SRTP asserts (inputs come from str0m's key derivation, and a panic is contained).

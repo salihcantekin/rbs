@@ -1,0 +1,37 @@
+[package]
+name = "rbs-peer-str0m"
+description = "WebRTC adapter of the RBS peer port on str0m (sans-IO), with a pure-Rust crypto provider (ADR-0139)."
+version.workspace = true
+edition.workspace = true
+rust-version = "1.89"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-crash = { path = "../rbs-crash" }
+rbs-peer = { path = "../rbs-peer" }
+# ADR-0139 decision 3: no str0m crypto feature (each pulls aws-lc-sys or OpenSSL, banned
+# by ADR-0046). The provider in `crypto` is built from RustCrypto crates, dimpl's
+# rust-crypto backend and rcgen on ring (ring is ADR-0046's provider). Exact pins.
+str0m = { version = "=0.26.0", default-features = false }
+str0m-proto = { version = "=0.8.0", default-features = false, features = ["dtls"] }
+dimpl = { version = "=0.9.0", default-features = false, features = ["rust-crypto"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+aes = "0.9"
+aes-gcm = "0.11"
+ctr = "0.10"
+hmac = "0.13"
+p256 = { version = "0.14", features = ["ecdh"] }
+sha1 = "0.11"
+sha2 = "0.11"
+ring = "0.17"
+time = "0.3"
+# Raw deflate for the SDP inside a code (pure Rust).
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+rbs-peer = { path = "../rbs-peer", features = ["conformance"] }
+
+[lints]
+workspace = true

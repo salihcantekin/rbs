@@ -78,6 +78,25 @@ pub fn add_secret(secret: &str) {
     SECRETS_CHANGED.fetch_add(1, Ordering::Release);
 }
 
+/// Forgets a secret that is no longer in use (a pairing code or ICE credential when
+/// its session ends, ADR-0139 decision 14), so it cannot push out one still live.
+/// Unknown text is ignored.
+pub fn remove_secret(secret: &str) {
+    let mut secrets = SECRETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if drop_secret(&mut secrets, secret) {
+        SECRETS_CHANGED.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Removes `secret` from `list`; true when it was there.
+fn drop_secret(list: &mut Vec<String>, secret: &str) -> bool {
+    let before = list.len();
+    list.retain(|s| s != secret);
+    list.len() != before
+}
+
 /// Adds `secret` to `list`, most recently added last: one already listed moves to the
 /// end (true: the list's contents did not change), so a secret still in use is not the
 /// first to go at `cap`.
@@ -730,6 +749,14 @@ mod tests {
             backtrace: "0: frame",
             recent: Some("12:00 INFO app [main] started"),
         }
+    }
+
+    #[test]
+    fn a_removed_secret_is_gone_and_unknown_text_is_ignored() {
+        let mut list = vec!["a".to_owned(), "b".to_owned()];
+        assert!(drop_secret(&mut list, "a"));
+        assert!(!drop_secret(&mut list, "zz"));
+        assert_eq!(list, ["b"]);
     }
 
     #[test]

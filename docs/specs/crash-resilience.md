@@ -108,7 +108,9 @@ pub fn redact(text: &str, home: Option<&str>) -> String;
 
 /// Text that must never appear in a report (a stream key, a stream URL in use).
 pub fn add_secret(secret: &str);
-pub const MAX_SECRETS: usize = 16;
+/// Forgets a secret no longer in use (ADR-0139 decision 14); unknown text is ignored.
+pub fn remove_secret(secret: &str);
+pub const MAX_SECRETS: usize = 64;
 
 pub const KEEP_REPORTS: usize = 20;
 pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
@@ -117,7 +119,7 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 - `dir` is `<config>/crash-reports/` and is created when missing. The hook is installed even when the marker fails.
 - **Who gets a report:** only threads that called `report_panics_on_this_thread` (the app: the UI thread and the studio's control thread). The hook does nothing else on other threads, so real-time threads never capture a backtrace or write a file. The previous hook runs on every thread (the message on stderr stays).
 - **Report file:** `panic-<pid>-<unix seconds>-<n>.txt`, written once per panic with `create_new`, UTF-8 text with these lines first: `RBS <version>`, `OS: <os> <arch>`, `Time: <RFC 3339 UTC>`, `Kind: caught|uncaught`, `Thread: <name or unnamed>`, `Message: <message>`, `Location: <file>:<line>:<column>`, then a blank line and the backtrace, then a blank line and `Recent log lines:` with the last diagnostics log lines (up to 500, oldest first), or `Recent log lines: not available` when no log runs or its writer held them at that moment (ADR-0158; the app registers `diag_log::recent` with `rbs_crash::set_recent_lines(fn() -> Vec<String>)`, a function that never waits). Message, backtrace and the log lines pass through `redact`.
-- **Redaction:** the home directory (`HOME`, on Windows `USERPROFILE`, without a trailing separator) becomes `~` where it is followed by a separator, the end or one of `"' :)` and a newline (on Windows ignoring ASCII case), so `/Users/sc` does not touch `/Users/scott`. Every secret from `add_secret` (4 bytes or longer; the newest 16) becomes `<redacted>`; the studio host adds the stream key and URL when a stream starts. After `rtmp://`, `rtmps://`, `srt://`, `rist://` or `whip://` (any case), everything up to whitespace or one of `"'>)` becomes `<redacted>`.
+- **Redaction:** the home directory (`HOME`, on Windows `USERPROFILE`, without a trailing separator) becomes `~` where it is followed by a separator, the end or one of `"' :)` and a newline (on Windows ignoring ASCII case), so `/Users/sc` does not touch `/Users/scott`. Every secret from `add_secret` (4 bytes or longer; the newest 64, minus those removed with `remove_secret`) becomes `<redacted>`; the studio host adds the stream key and URL when a stream starts. After `rtmp://`, `rtmps://`, `srt://`, `rist://` or `whip://` (any case), everything up to whitespace or one of `"'>)` becomes `<redacted>`.
 - **Limits:** at most `MAX_REPORTS_PER_PROCESS` per process, of which caught panics use at most one less; at `install`, reports beyond the newest `KEEP_REPORTS` (by time, then `n`) are deleted, except one that `unclean()` points to.
 - **Hook robustness:** it never waits on a lock (secrets are read with `try_lock`; when busy they are not applied); thread-locals are read with `try_with`; a thread-local flag stops a nested panic from writing again; the writer uses no panicking operation (a panic inside a hook aborts); a failed write is ignored.
 - **Running marker:** created as `starting-<pid>.tmp`, locked with `File::try_lock`, `started <unix seconds>` written, then renamed to `running-<pid>.lock`, and held for the life of the `Session`. `end_clean` writes `clean\n` into it while still locked, deletes it, then closes it. Renaming and deleting the open file works on Windows because std opens files with `FILE_SHARE_DELETE`. Dropping the `Session` without `end_clean` releases the lock and keeps the file, as a crash would.
