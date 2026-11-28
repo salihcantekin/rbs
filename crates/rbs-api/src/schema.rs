@@ -103,6 +103,7 @@ const SHARDS: &[(&str, &str)] = &[
     ("filter", include_str!("../schemas/filter.json")),
     ("global", include_str!("../schemas/global.json")),
     ("group", include_str!("../schemas/group.json")),
+    ("guest", include_str!("../schemas/guest.json")),
     ("import", include_str!("../schemas/import.json")),
     ("item", include_str!("../schemas/item.json")),
     ("look", include_str!("../schemas/look.json")),
@@ -878,6 +879,30 @@ fn group_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
         (
             "source.set_sends".into(),
             pair::<SetSourceSends, Empty>(WireRequest::SourceSetSends)?,
+        ),
+        (
+            "guest.share".into(),
+            pair::<GuestShare, GuestShareStarted>(WireRequest::GuestShare)?,
+        ),
+        (
+            "guest.share.code".into(),
+            pair::<GuestShareRef, GuestCode>(WireRequest::GuestShareCode)?,
+        ),
+        (
+            "guest.share.accept_answer".into(),
+            pair::<GuestAcceptAnswer, GuestShareState>(WireRequest::GuestAcceptAnswer)?,
+        ),
+        (
+            "guest.share.confirm".into(),
+            pair::<GuestShareRef, GuestShareState>(WireRequest::GuestShareConfirm)?,
+        ),
+        (
+            "guest.share.stop".into(),
+            pair::<GuestShareRef, Empty>(WireRequest::GuestShareStop)?,
+        ),
+        (
+            "guest.status".into(),
+            pair::<Empty, crate::types::Snapshot<GuestStatus>>(WireRequest::GuestStatus)?,
         ),
         (
             "group.get".into(),

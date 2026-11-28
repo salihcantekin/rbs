@@ -50,7 +50,7 @@ const MAX_AU_PER_CHANNEL: u32 = 768;
 const HNS_PER_SEC: u64 = 10_000_000;
 
 /// Keeps the process's implicit multithreaded apartment alive (see the module doc).
-fn ensure_mta() {
+pub(crate) fn ensure_mta() {
     static DONE: std::sync::Once = std::sync::Once::new();
     DONE.call_once(|| {
         // SAFETY: plain FFI call. The cookie is never released: the MTA stays alive
@@ -60,10 +60,10 @@ fn ensure_mta() {
 }
 
 /// One `MFStartup`, balanced by `MFShutdown` on drop, held by each session.
-struct Runtime;
+pub(crate) struct Runtime;
 
 impl Runtime {
-    fn start() -> Result<Self, CreateError> {
+    pub(crate) fn start() -> Result<Self, CreateError> {
         ensure_mta();
         // SAFETY: plain FFI call, balanced by `Drop`.
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }

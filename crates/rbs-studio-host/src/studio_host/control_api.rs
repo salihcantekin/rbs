@@ -7,6 +7,7 @@ mod api_bus;
 mod api_canvas;
 mod api_collection;
 mod api_group;
+pub(super) mod api_guest;
 mod api_item;
 mod api_item2;
 mod api_item3;
@@ -143,8 +144,13 @@ impl ApiTarget<'_> {
     }
 
     fn route(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
-        use rbs_api::Command as C;
         self.refuse_output(&command)?;
+        self.dispatch(command)
+    }
+
+    /// Hands `command` to the answer of its group.
+    fn dispatch(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
+        use rbs_api::Command as C;
         match command {
             C::StudioGet
             | C::SourceList
@@ -193,6 +199,7 @@ impl ApiTarget<'_> {
             | C::CanvasSetVerticalSize(..)
             | C::CanvasRemoveVertical(..) => self.answer_source(command),
             C::Bus(b) => self.answer_bus(b),
+            C::Guest(g) => self.answer_guest(g),
             C::CanvasSetMasterVolume(..)
             | C::CanvasSetMasterMuted(..)
             | C::FilterTypes(..)

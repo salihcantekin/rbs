@@ -1,0 +1,561 @@
+{
+  "guest.share": {
+    "input_schema": {
+      "$defs": {
+        "GuestShareVideo": {
+          "additionalProperties": false,
+          "description": "The picture of [`GuestShare`].",
+          "properties": {
+            "bitrate_kbps": {
+              "description": "Start and highest bitrate, 300 to 8000 kbit/s; the network may lower it.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "description": "Even, 180 to 1080.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Even, 320 to 1920.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "bitrate_kbps"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`guest.share` (`admin`, `live`): an invite of the main canvas's program. Refused\nwith `conflict` and `data.reason` `guest_return_feed` while the program draws a\nguest, `no_encoder_slot` or `too_many_outputs` when no slot is free; nothing is\nopened then.",
+      "properties": {
+        "check_phrase": {
+          "description": "Compare the check phrase before the program is sent; default true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lifetime_s": {
+          "description": "How long the invite stays valid, 60 to 1800 seconds; default 600.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "local_only": {
+          "description": "Private addresses only, no STUN query; default false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "video": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuestShareVideo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The picture; default 1280x720 at 2500 kbit/s. The frame rate is the canvas's."
+        }
+      },
+      "title": "GuestShare",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GuestState": {
+          "description": "Where a share is.",
+          "oneOf": [
+            {
+              "const": "gathering",
+              "description": "Gathering candidates; no code yet.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_for_answer",
+              "description": "The invite code is ready and waits for the answer.",
+              "type": "string"
+            },
+            {
+              "const": "connecting",
+              "description": "Connectivity checks and DTLS run.",
+              "type": "string"
+            },
+            {
+              "const": "check_phrase",
+              "description": "Connected; this side has not confirmed the phrase.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Sending.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Ended for `reason`; new codes are needed.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "Stopped or closed.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The result of `guest.share`.",
+      "properties": {
+        "share": {
+          "description": "The share's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/GuestState",
+          "description": "Its state, `gathering` at first."
+        }
+      },
+      "required": [
+        "share",
+        "state"
+      ],
+      "title": "GuestShareStarted",
+      "type": "object"
+    }
+  },
+  "guest.share.accept_answer": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`guest.share.accept_answer` (`admin`, `live`): the guest's answer code. A bad\nanswer is `invalid_params` with `data.reason` set to a `guest_*` code reason, and\nthe share keeps waiting.",
+      "properties": {
+        "answer": {
+          "description": "The answer code, a secret.",
+          "type": "string"
+        },
+        "share": {
+          "description": "The share's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "share",
+        "answer"
+      ],
+      "title": "GuestAcceptAnswer",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GuestState": {
+          "description": "Where a share is.",
+          "oneOf": [
+            {
+              "const": "gathering",
+              "description": "Gathering candidates; no code yet.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_for_answer",
+              "description": "The invite code is ready and waits for the answer.",
+              "type": "string"
+            },
+            {
+              "const": "connecting",
+              "description": "Connectivity checks and DTLS run.",
+              "type": "string"
+            },
+            {
+              "const": "check_phrase",
+              "description": "Connected; this side has not confirmed the phrase.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Sending.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Ended for `reason`; new codes are needed.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "Stopped or closed.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The state after `guest.share.accept_answer` or `guest.share.confirm`.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/GuestState",
+          "description": "Its state."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "GuestShareState",
+      "type": "object"
+    }
+  },
+  "guest.share.code": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "One share, for `guest.share.code`, `guest.share.confirm` and `guest.share.stop`.",
+      "properties": {
+        "share": {
+          "description": "The share's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "share"
+      ],
+      "title": "GuestShareRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`guest.share.code` (`admin`, `read`): the invite code. `conflict` while it is\nstill being made or after the answer was taken.",
+      "properties": {
+        "code": {
+          "description": "The code, a secret: show it, copy it, never log it.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "When it expires, seconds since the Unix epoch.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code",
+        "expires_at"
+      ],
+      "title": "GuestCode",
+      "type": "object"
+    }
+  },
+  "guest.share.confirm": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "One share, for `guest.share.code`, `guest.share.confirm` and `guest.share.stop`.",
+      "properties": {
+        "share": {
+          "description": "The share's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "share"
+      ],
+      "title": "GuestShareRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GuestState": {
+          "description": "Where a share is.",
+          "oneOf": [
+            {
+              "const": "gathering",
+              "description": "Gathering candidates; no code yet.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_for_answer",
+              "description": "The invite code is ready and waits for the answer.",
+              "type": "string"
+            },
+            {
+              "const": "connecting",
+              "description": "Connectivity checks and DTLS run.",
+              "type": "string"
+            },
+            {
+              "const": "check_phrase",
+              "description": "Connected; this side has not confirmed the phrase.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Sending.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Ended for `reason`; new codes are needed.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "Stopped or closed.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The state after `guest.share.accept_answer` or `guest.share.confirm`.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/GuestState",
+          "description": "Its state."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "GuestShareState",
+      "type": "object"
+    }
+  },
+  "guest.share.stop": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "One share, for `guest.share.code`, `guest.share.confirm` and `guest.share.stop`.",
+      "properties": {
+        "share": {
+          "description": "The share's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "share"
+      ],
+      "title": "GuestShareRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "guest.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GuestShareRow": {
+          "description": "One share of [`GuestStatus`]. Never holds a code.",
+          "properties": {
+            "bitrate_kbps": {
+              "description": "The start and highest bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "expires_at": {
+              "description": "When the invite expires, seconds since the Unix epoch, while it waits.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "height": {
+              "description": "The picture's height.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "phrase": {
+              "description": "The six check words, once connected; not a secret.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why it failed or closed: a `guest_*` id.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "share": {
+              "description": "The share's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/GuestState",
+              "description": "Its state."
+            },
+            "width": {
+              "description": "The picture's width.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "share",
+            "state",
+            "width",
+            "height",
+            "bitrate_kbps"
+          ],
+          "type": "object"
+        },
+        "GuestState": {
+          "description": "Where a share is.",
+          "oneOf": [
+            {
+              "const": "gathering",
+              "description": "Gathering candidates; no code yet.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_for_answer",
+              "description": "The invite code is ready and waits for the answer.",
+              "type": "string"
+            },
+            {
+              "const": "connecting",
+              "description": "Connectivity checks and DTLS run.",
+              "type": "string"
+            },
+            {
+              "const": "check_phrase",
+              "description": "Connected; this side has not confirmed the phrase.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Sending.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Ended for `reason`; new codes are needed.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "Stopped or closed.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "GuestStatus": {
+          "description": "`guest.status` (`read`) and the shares of `guest.changed`.",
+          "properties": {
+            "shares": {
+              "description": "The shares, oldest first; an ended one stays until the next `guest.share`.",
+              "items": {
+                "$ref": "#/$defs/GuestShareRow"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "shares"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/GuestStatus",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

@@ -32,6 +32,7 @@ pub(super) fn start(
     // Signed-in profiles sit beside the add-ons, in the local data directory.
     let profiles = config.add_ons.as_ref().and_then(profiles_dir);
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
+    let guests = guest_host::GuestHost::new(config.peers.map(|p| p.0));
     add_ons.finish_updates();
     let engine_slot = engine_slot(&collection, &add_ons);
     let browser = seams::browser_tree(
@@ -121,6 +122,7 @@ pub(super) fn start(
         monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
         loudness_state: loudness::LoudnessState::new(config.loudness),
         replay: replay::ReplayHost::new(),
+        guests,
         protection: protection::ProtectionHost::new(config.system_probe),
         streaming: stream::StreamState::new(keys, config.key_account),
         engine: Box::new(engine),

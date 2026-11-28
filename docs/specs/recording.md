@@ -338,6 +338,16 @@ Tests: `crates/rbs-record/tests/studio.rs` `a_t_bar_holds_the_blend_then_takes_o
 
 `Recording::start` is a studio without a preview, in a strict mode, with the recording's nodes added before the first apply: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source the recording schedules (video and audio) that cannot be instantiated fails it (`Source`), both before any device opens (test `a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens`). `finish` is `Studio::shutdown`; its `shutdown_errors` hold the draining apply's errors and the engine shutdown's.
 
+### Outputs that own their chain (ADR-0139 decisions 8 and 9)
+
+A guest share encodes for one peer, so `OutputSettings::own_chain` (`OwnChain { floor_bps, max_bps }`) gives an output its own video encoder chain:
+
+- It shares no running encoder, and no later output shares its encoder (the chain is marked exclusive). Audio still shares by the usual rule: nothing in the audio encoder follows one output.
+- The encoder is opened with low-latency tuning (`EncoderTuning::low_latency`); B-frames, keyframe interval and rate control come from its `VideoSettings` (the caller sets no B-frames and CBR).
+- The output node gets encoder feedback (`rbs-nodes` `feedback`): the transport's keyframe requests reach the encoder, at most one per second; when the adapter lists `bitrate` in `codec.reconfigure` and the rate control has a bitrate, the transport's bitrate hints move it through `BitrateLimiter` between `floor_bps` and `max_bps`. Otherwise the bitrate stays fixed.
+
+**Reserved slots.** `Studio::reserve_slot(canvas)` keeps one output slot and one video chain slot of a canvas for an output that starts later, with nothing opened. Reservations count in `MAX_OUTPUTS`, `MAX_OUTPUTS_PER_CANVAS`, `MAX_CHAINS_PER_CANVAS` and `MAX_CHAINS` for every later start and reservation, which gets `TooManyOutputs` or `NoEncoderSlot` as it would with those outputs running. `Studio::start_output` with `OutputSettings::reserved` takes the reservation on success and keeps it on failure; `Studio::release_slot` gives it back; `start_outputs` does not read `reserved`. The ADR-0087 estimate of a reserved output is the caller's: it adds a planned output for each reservation.
+
 ### Replay buffer (ADR-0088)
 
 `rbs_nodes::replay::PacketRing` is the buffer's data structure, `ReplayRingNode` feeds it, `Studio::arm_replay` runs it and the studio host (rbs-app) arms it, saves clips and publishes its state. The UI follows in a later change.

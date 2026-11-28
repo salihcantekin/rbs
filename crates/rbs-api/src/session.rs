@@ -31,6 +31,9 @@ use ui_routing::PendingUi;
 
 /// The protocol version this server speaks.
 ///
+/// 1.116 adds guest shares (ADR-0139): `guest.share`, `guest.share.code`,
+/// `guest.share.accept_answer`, `guest.share.confirm`, `guest.share.stop`, `guest.status`
+/// and `guest.changed`.
 /// 1.115 adds audio bus editing (ADR-0170): `bus.*`, `source.set_sends`, `bus.changed`.
 /// 1.114 adds `ui.panel.full_height` (ADR-0197): a side area runs the full window height.
 /// 1.113 adds audio tracks in `record.status` (ADR-0170).
@@ -150,7 +153,7 @@ use ui_routing::PendingUi;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.115";
+pub const PROTOCOL_VERSION: &str = "1.116";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

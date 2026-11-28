@@ -27,10 +27,12 @@ mod browser;
 mod buses;
 mod canvas;
 mod groups;
+mod guest;
 mod item_cues;
 mod item_edits;
 mod media;
 mod methods;
+mod network;
 mod obs_import;
 mod scene_refs;
 mod scroll;
@@ -46,6 +48,7 @@ pub use browser::*;
 pub use buses::*;
 pub use canvas::*;
 pub use groups::*;
+pub use guest::*;
 pub use item_cues::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
@@ -1537,6 +1540,8 @@ pub enum Command {
     CanvasSetMasterMuted(SetMasterMuted),
     /// The bus methods and `source.set_sends` (protocol 1.115, ADR-0097).
     Bus(BusCommand),
+    /// The guest methods (protocol 1.116, ADR-0139).
+    Guest(GuestCommand),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
     /// `filter.types` (protocol 1.8; the `domain` parameter since 1.16, ADR-0082).
@@ -1860,38 +1865,6 @@ impl Command {
         match self {
             Command::SettingsSet(p) if p.canvas.is_some() => Effect::Live,
             c => method_effect(c.method()).unwrap_or(Effect::Destructive),
-        }
-    }
-
-    /// True when the call, by its parameters alone, could make RBS open a connection
-    /// to a host (ADR-0052 decision 4, protocol 1.79): a browser source, or a location
-    /// value that is not a local absolute path ([`crate::location::is_local_path`]).
-    /// Checked on the API thread; a source's settings and target, whose meaning
-    /// depends on the source's kind, are checked by the control target.
-    pub fn reaches_network(&self) -> bool {
-        use crate::location::is_local_path;
-        match self {
-            Command::SourceAdd(p) => {
-                p.kind == SourceKind::Browser
-                    || p.path.as_deref().is_some_and(|f| !is_local_path(f))
-            }
-            // Downloads from the catalog's hosts (ADR-0145 decision 9).
-            Command::AddonInstall(_) | Command::AddonUpdate(_) => true,
-            Command::RecordStartToFile(p) => !is_local_path(&p.path),
-            Command::CollectionSetStingerFile(p) => !is_local_path(&p.path),
-            Command::SettingsSet(p) => {
-                let far = |f: &str| !f.is_empty() && !is_local_path(f);
-                p.profiles
-                    .iter()
-                    .flatten()
-                    .chain(p.vertical_profile.iter().flatten().map(|b| &**b))
-                    .any(|r| far(&r.folder))
-                    || p.replay
-                        .as_ref()
-                        .and_then(|r| r.folder.as_deref())
-                        .is_some_and(far)
-            }
-            _ => false,
         }
     }
 }
@@ -2234,6 +2207,14 @@ pub enum Response {
     Groups(GroupList),
     /// `bus.list` (protocol 1.115).
     Buses(BusList),
+    /// `guest.share` (protocol 1.116).
+    GuestShareStarted(GuestShareStarted),
+    /// `guest.share.code` (protocol 1.116). A secret.
+    GuestCode(GuestCode),
+    /// `guest.share.accept_answer`, `guest.share.confirm` (protocol 1.116).
+    GuestShareState(GuestShareState),
+    /// `guest.status` (protocol 1.116).
+    GuestStatus(Snapshot<GuestStatus>),
     /// `group.get` (protocol 1.111).
     Group(GroupState),
     /// `item.add` (protocol 1.6).

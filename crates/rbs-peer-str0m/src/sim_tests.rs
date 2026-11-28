@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use rbs_peer::{CodeError, Envelope, FailureReason, PeerError, PeerEvent, SessionId, SideSettings};
 
 use crate::engine::{Engine, Phase, Setup, sdp_candidates, sdp_fingerprint};
+use crate::media::{Received, Track, WriteError};
 use crate::payload;
 use crate::stun::{self, TransactionId};
 
@@ -703,4 +704,109 @@ fn a_code_with_eight_candidates_fits_the_code_limit() {
         sdp_candidates(&payload::decode(&Envelope::decode(&full).unwrap().payload).unwrap()).len(),
         8
     );
+}
+
+/// An H.264 access unit in Annex B: SPS, PPS and an IDR slice big enough to be split
+/// over several RTP packets, or a non-IDR slice.
+fn access_unit(key: bool, fill: u8) -> Vec<u8> {
+    let mut au = Vec::new();
+    if key {
+        au.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0xda, 0x01, 0x40]);
+        au.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80]);
+    }
+    au.extend_from_slice(&[0, 0, 0, 1, if key { 0x65 } else { 0x41 }]);
+    au.extend(std::iter::repeat_n(fill, 3000));
+    au
+}
+
+/// Connects a sharer `a` and a host `h` and confirms both sides.
+fn live(w: &mut World) -> (usize, usize) {
+    let (a, h) = pair(w, false, false);
+    connect(w, a, h);
+    w.engine(a).confirm().unwrap();
+    w.engine(h).confirm().unwrap();
+    (a, h)
+}
+
+fn received(w: &mut World, h: usize) -> Vec<Received> {
+    std::iter::from_fn(|| w.engine(h).poll_received()).collect()
+}
+
+#[test]
+fn frames_reach_the_host_with_their_capture_time() {
+    let mut w = World::new();
+    let (a, h) = live(&mut w);
+    let base = 5_000_000_000u64;
+    for i in 0..3u64 {
+        let now = w.now;
+        let au = access_unit(i == 0, i as u8 + 1);
+        let capture = base + i * 33_333_333;
+        w.engine(a)
+            .write_media(now, Track::Video, capture, &au)
+            .unwrap();
+        w.engine(a)
+            .write_media(now, Track::Audio, capture, &[0xfc, 1, 2, 3])
+            .unwrap();
+        w.run(Duration::from_millis(40));
+    }
+    w.run(Duration::from_millis(200));
+    let frames = received(&mut w, h);
+    let video: Vec<_> = frames.iter().filter(|f| f.track == Track::Video).collect();
+    let audio: Vec<_> = frames.iter().filter(|f| f.track == Track::Audio).collect();
+    assert_eq!(video.len(), 3, "every access unit arrives whole");
+    assert_eq!(audio.len(), 3);
+    assert!(video[0].keyframe && !video[1].keyframe);
+    assert!(video[1].data.ends_with(&[2; 64]), "payload kept");
+    // abs-capture-time is NTP Q32.32 on the wire: exact to well under a microsecond.
+    let near = |got: Option<u64>, want: u64| got.is_some_and(|g| g.abs_diff(want) < 1_000);
+    assert!(
+        near(video[2].capture_nanos, base + 2 * 33_333_333),
+        "{:?}",
+        video[2].capture_nanos
+    );
+    assert!(near(audio[0].capture_nanos, base));
+    assert_eq!(&audio[0].data[..], &[0xfc, 1, 2, 3]);
+    assert_eq!(w.engine(a).media_counters().written, 6);
+}
+
+#[test]
+fn nothing_is_sent_or_handed_on_before_confirmation() {
+    let mut w = World::new();
+    let (a, h) = pair(&mut w, false, false);
+    connect(&mut w, a, h);
+    let now = w.now;
+    assert_eq!(
+        w.engine(a)
+            .write_media(now, Track::Video, 1, &access_unit(true, 1)),
+        Err(WriteError::NotConfirmed),
+        "the sharer's own gate"
+    );
+    // The sharer confirms, the host does not: frames reach the host but stay gated.
+    w.engine(a).confirm().unwrap();
+    w.engine(a)
+        .write_media(now, Track::Video, 1, &access_unit(true, 1))
+        .unwrap();
+    w.run(Duration::from_millis(200));
+    assert!(received(&mut w, h).is_empty(), "the host's gate");
+    assert_eq!(w.engine(h).media_counters().gated, 1);
+    // The host side never writes.
+    assert_eq!(
+        w.engine(h).write_media(now, Track::Audio, 1, &[1]),
+        Err(WriteError::NotConfirmed)
+    );
+}
+
+#[test]
+fn a_keyframe_request_reaches_the_sharer() {
+    let mut w = World::new();
+    let (a, h) = live(&mut w);
+    let now = w.now;
+    w.engine(a)
+        .write_media(now, Track::Video, 1, &access_unit(true, 1))
+        .unwrap();
+    w.run(Duration::from_millis(100));
+    let now = w.now;
+    assert!(w.engine(h).request_keyframe(now));
+    w.run(Duration::from_millis(100));
+    assert_eq!(w.engine(a).media_counters().keyframe_requests, 1);
 }

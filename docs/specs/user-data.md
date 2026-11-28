@@ -169,6 +169,10 @@ loads and validates the target before closing views or changing the running
 studio or selected collection id; on failure the original selection, collection
 and runtime remain, pending clears and the error line reports the refusal.
 
+### Guest share STUN servers (ADR-0139 decision 7)
+
+A guest share (`guest.share`) asks these public STUN servers for its public address unless it is local only: `stun.l.google.com:19302` and `stun.cloudflare.com:3478`. No STUN query happens before *Share*. The list is built in for now (`rbs-studio-host` `guest_share::DEFAULT_STUN_SERVERS`); the saved setting, with an empty list meaning local network only, comes with the guest settings UI.
+
 ## Errors and failure behaviour
 
 `DataError` (non-exhaustive): `Io`, `Syntax`, `NoVersion`, `WrongKind { found, expected }`, `Newer { found, supported }`, `Invalid(BodyError)`, `BadName(reason)`, `NameTaken(name)`, `NotFound(id)`. Nothing panics.

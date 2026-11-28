@@ -1,8 +1,8 @@
-//! Typed errors of the encoder port. No adapter may panic across the port boundary.
+//! Typed errors of the encoder and decoder ports. No adapter may panic across the port boundary.
 
 use std::fmt;
 
-/// Why an encoder session could not be created.
+/// Why an encoder or decoder session could not be created.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateError {
@@ -87,3 +87,66 @@ impl fmt::Display for EncodeError {
 }
 
 impl std::error::Error for EncodeError {}
+
+/// Why a video decoder call failed.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoDecodeError {
+    /// The packet does not match the session (codec, framing), is malformed, or
+    /// asks for a size above the session's limit. The packet was not decoded.
+    InvalidInput(String),
+    /// No keyframe with parameter sets has been decoded yet, or the stream was
+    /// reset. The caller requests a keyframe (PLI) and keeps submitting.
+    NeedKeyframe,
+    /// The decoder's input queue is full. `drain`, then submit the same packet again.
+    Busy,
+    /// The stream passed the caller's validator but this decoder or hardware refuses it
+    /// (profile, level, size). The engine falls back to the next adapter. Not
+    /// recoverable on this session.
+    Unsupported(String),
+    /// The stream changed to a format the adapter cannot follow. Returned only from
+    /// `submit`; that packet was not decoded and pictures before it stay drainable.
+    /// The caller recreates the session. An in-band SPS change within `max_size` and
+    /// the allowed formats is handled by the adapter and is not an error.
+    FormatChanged,
+    /// The device was lost or reset. The session must be recreated.
+    DeviceLost,
+    /// Any other failure inside the adapter.
+    Failed {
+        /// Description for diagnostics.
+        reason: String,
+        /// Whether the session can continue.
+        recoverable: bool,
+    },
+}
+
+impl VideoDecodeError {
+    /// True when the session can continue.
+    pub const fn is_recoverable(&self) -> bool {
+        match self {
+            VideoDecodeError::InvalidInput(_)
+            | VideoDecodeError::NeedKeyframe
+            | VideoDecodeError::Busy => true,
+            VideoDecodeError::Unsupported(_)
+            | VideoDecodeError::FormatChanged
+            | VideoDecodeError::DeviceLost => false,
+            VideoDecodeError::Failed { recoverable, .. } => *recoverable,
+        }
+    }
+}
+
+impl fmt::Display for VideoDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VideoDecodeError::InvalidInput(e) => write!(f, "invalid input: {e}"),
+            VideoDecodeError::NeedKeyframe => f.write_str("waiting for a keyframe"),
+            VideoDecodeError::Busy => f.write_str("decoder queue full"),
+            VideoDecodeError::Unsupported(e) => write!(f, "unsupported stream: {e}"),
+            VideoDecodeError::FormatChanged => f.write_str("stream format changed"),
+            VideoDecodeError::DeviceLost => f.write_str("device lost"),
+            VideoDecodeError::Failed { reason, .. } => write!(f, "decode failed: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for VideoDecodeError {}

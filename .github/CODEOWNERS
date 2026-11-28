@@ -28,6 +28,7 @@
 /crates/rbs-mux*/            @salihcantekin
 /crates/rbs-media-format/   @salihcantekin
 /crates/rbs-transport*/      @salihcantekin
+/crates/rbs-peer-str0m/     @salihcantekin
 /crates/rbs-plugin-host/     @salihcantekin
 
 # UI rules and what enforces them (ADR-0115)

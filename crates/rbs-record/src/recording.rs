@@ -531,6 +531,8 @@ impl RecordSettings {
             holdable: false,
             audio_bus: None,
             more_tracks: Vec::new(),
+            own_chain: None,
+            reserved: None,
         }
     }
 }

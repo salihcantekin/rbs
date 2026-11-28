@@ -22,7 +22,7 @@ Define how RBS talks to any external technology (OS capture, audio devices, enco
 | --- | --- | --- |
 | `rbs-capture` ([spec](capture-port.md)) | `CaptureFactory`, `CaptureSession` | Windows Graphics Capture, DXGI duplication, ScreenCaptureKit, PipeWire portal, X11, V4L2, Media Foundation, AVFoundation |
 | `rbs-audio-io` ([spec](audio-io-port.md)) | `AudioBackend`, `AudioInputStream` | WASAPI, process loopback, CoreAudio, PipeWire, ALSA, `cpal` |
-| `rbs-codec` | `VideoEncoderFactory`, `VideoEncoder`, `VideoDecoder`, `AudioEncoder` | NVENC, AMF, QSV/oneVPL, VideoToolbox, VA-API, Vulkan Video, x264, SVT-AV1, rav1e, Opus, FFmpeg |
+| `rbs-codec` | `VideoEncoderFactory`, `VideoEncoder`, `VideoDecoderFactory`, `VideoDecoder` ([live decode](#live-video-decode)), `AudioEncoder` | NVENC, AMF, QSV/oneVPL, VideoToolbox, VA-API, Vulkan Video, x264, SVT-AV1, rav1e, Opus, FFmpeg |
 | `rbs-mux` | `Muxer` | fragmented MP4, MKV, MPEG-TS, FLV, HLS/DASH segmenter |
 | `rbs-transport` | `Transport` | RTMP/RTMPS (incl. Enhanced RTMP), SRT, WHIP, file sink, virtual camera |
 
@@ -66,6 +66,49 @@ pub trait VideoEncoder: Send {
 
 These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR. Frame, block and packet types (`VideoFrame`, `AudioBlock`, `EncodedPacket`, `StreamDescriptor`, formats) come from the [media types spec](media-types.md); in the sketch above, `VideoFrameRef<'_>` is `&VideoFrame`. The encode, mux and transport contracts are fixed in [output ports](output-ports.md).
 
+## Live video decode
+
+- Status: Draft, revised after the independent review of 2026-11-28 (ADR-0139 phase 1c). Adapters merge only after the revised contract is accepted.
+- Crate: `rbs-codec` (`video_decoder.rs`, `h264.rs`, `VideoDecodeError`, `conformance::video_decoder`). Adapters: `rbs-codec-videotoolbox` (macOS) and `rbs-codec-mf` (Windows) add a decoder factory beside their encoder. A decoder factory has its own `AdapterId` and probe, so `codec.sessions.max` on it counts decode sessions.
+- Why a second decode port: `rbs-media-decode` ([spec](media-decode-port.md)) opens a file and owns demuxing and seeking. A live stream has neither; the caller depacketizes and submits access units.
+
+```rust
+pub trait VideoDecoderFactory: AdapterFactory {
+    fn create(&self, config: &VideoDecoderConfig) -> Result<Box<dyn VideoDecoder>, CreateError>;
+}
+pub trait VideoDecoder: Send {
+    fn output_format(&self) -> Option<VideoFormat>;            // None until the first SPS
+    fn submit(&mut self, packet: &EncodedPacket) -> Result<(), VideoDecodeError>;
+    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError>;
+    fn reset(&mut self) -> Result<(), VideoDecodeError>;
+    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError>;
+    fn max_surfaces(&self) -> usize { 0 }
+    fn stats(&self) -> DecoderStats;  // pictures, dropped_no_surface, cpu_copies, need_keyframe
+}
+```
+
+`VideoDecoderConfig { codec, bitstream, extradata, max_size, target: DecodeOutput, min_surfaces }`. The live case (the guest source) is `AnnexB` with empty `extradata`: one access unit per packet, SPS and PPS in band, pts already on the receiver's master clock, no B-frames. `LengthPrefixed` with an `avcC` `extradata` is accepted but untested in phase 1. `DecodeOutput { adapter_luid, accept }` (not the file port's `DecodeTarget`) lists the native memory kinds the caller can import and the Direct3D adapter the studio renders on.
+
+Invariants:
+
+1. **Capabilities.** `codec.video.decode` (set of codec names; phase 1 needs `h264`), `codec.video.decode.profiles` (`h264.high`, ...), `codec.video.decode.width`/`.height` (ranges), `codec.video.decode.fps.max`, `decode.output_memory` (kinds the adapter can hand out; `system` always works), `codec.sessions.max` (optional). `probe` only queries; a factory's constructor does nothing (P13): no thread, session or GPU object before `create`.
+2. **Untrusted input.** One safe-Rust Annex B splitter and SPS parser lives in `rbs_codec::h264` (no dependencies; mutation-tested in its unit tests, and the SPS fuzz target of ADR-0139 decision 16 calls it); every adapter calls it on every SPS before the platform decoder sees the bytes. The caller validates too (ADR-0139 decision 11); this is the second line. `max_size` is compared with the *cropped* display size (a 1080p stream is coded at 1088 lines) and pictures carry the cropped size. An oversized stream is `InvalidInput`; a stream the allow list admits but the hardware refuses (profile, level, size) is `Unsupported`, so the engine falls back to the next adapter. The adapter never panics on any bytes, never reads outside the packet, and answers garbage, truncated, empty or oversized-NAL packets with a typed error and a session that still decodes afterwards.
+3. **Keyframe gating.** Until a keyframe with parameter sets has been decoded, and again after `reset`, after `flush`, and after a platform decode error on a packet, a non-key packet is dropped and `submit` returns `NeedKeyframe`. The caller sends a PLI and keeps submitting; the error is recoverable and counted, not logged per packet.
+4. **Stamps are bit-exact.** A picture's timestamp is the submitted packet's `pts` exactly, not rounded to the platform's unit (Media Foundation counts 100 ns; RTP-derived stamps are not multiples of that). An adapter that must pass times through the platform keeps its own FIFO keyed by submission order. Order is presentation order; no clock, no jitter buffer, no B-frames (ADR-0139 decision 9).
+5. **Latency.** The adapter asks the platform for low-latency decode (no reordering delay: Media Foundation `CODECAPI_AVLowLatencyMode`, VideoToolbox without reordering) and `drain` after `submit` returns the packet's picture, within `DecodeClip::lookahead` pictures (0 for a synchronous decoder, at most 1 otherwise; suite case `no-lookahead`). `flush` is end of stream and also makes the session usable again, gated on a keyframe.
+6. **Back-pressure.** `submit` does at most 2 ms of adapter work outside the platform call. When the adapter's bounded input queue is full it returns `Busy`: `drain`, then submit the same packet again. A platform decode error on a packet re-enters keyframe gating (`NeedKeyframe` on the next packets).
+7. **Format changes.** An in-band SPS change within `max_size` and the allowed formats is followed by the adapter itself (renegotiation, or a new platform session at that IDR) and updates `output_format`. `FormatChanged` is returned only from `submit`, only for a change the adapter cannot follow; that packet was not decoded and pictures before it stay drainable; the caller recreates the session. Media Foundation's stream-change notice is handled inside `drain` and is never an error by itself.
+8. **Native pictures (P4, ADR-0109 decision 8).** Native output is handed out only for kinds `target.accepts`, and only as: Windows `NativeSurface::D3dSharedHandle { nt: true }` of NV12 or `B8G8R8A8` (as the file port; `rbs-gpu` import support is checked before the adapter merges) with `SurfaceSync::Ready` (the worker waited on the fence), on `target.adapter_luid`; macOS `NativeSurface::IoSurface` of NV12 (`420v`). Never a raw texture pointer, never a surface on another adapter, never a sync the render thread would block on. `adapter_luid: None` on Windows means system memory only. Colour comes from the VUI, BT.709 limited when absent.
+9. **Pool and leases.** Native pictures live in an adapter-owned pool *separate from the decoder's own reference pictures*: Windows copies each picture on the GPU into shared NT-handle textures (the decoder's texture array is its DPB and not shareable); macOS keeps a slot table of retained IOSurface-backed buffers. A slot returns to the pool only when its lease is released (the studio does that after its GPU work on it has finished). The adapter enforces `max_surfaces()`: with every slot leased the new picture is released and counted in `dropped_no_surface`; it never allocates beyond, never waits, and the render thread never waits on it. `max_surfaces()` is 0 if and only if the session hands out system memory only; native adapters override it (at most 8, so four guests stay under the importer's `MAX_SURFACES` of 64); `create` gives at least `min_surfaces` (default 3) or fails with a typed `CreateError`. A dropped session's pool stays alive while a lease names a slot, and handles stay open 10 s after the last reference (the file port's rules).
+10. **Hidden source.** A guest that is not drawn drops its decoder (Standby holds no hardware session, P13, and frees decode sessions for `guest_decode_cap`); it creates a new one and sends a PLI when drawn again. `reset` is for loss recovery on a live session and keeps the session and pool.
+11. **Errors and threads.** `VideoDecodeError` is typed with `is_recoverable()` (`InvalidInput`, `NeedKeyframe`, `Busy` recoverable; `Unsupported`, `FormatChanged`, `DeviceLost` not). A session is driven from one worker thread, never a real-time thread. Threads are created in `create` and stopped and joined in `Drop`; a platform callback on an OS thread hands off through a bounded queue and never touches the caller's `Vec`. A decoder failure is the source's (ADR-0055).
+
+Conformance: `rbs_codec::conformance::video_decoder(&factory, &clip)` with a `DecodeClip` (the live case above, stamps that are not multiples of 100 ns, `lookahead`). Cases: `delta-before-keyframe`, `hostile-input`, `decode-after-hostile-input`, `no-lookahead`, `decode-clip` (count, size, bit-exact stamps), `stats`, `output-format`, `max-surfaces`, `flush-gates-and-second-flush-empty`, `reset-then-keyframe`, `foreign-codec` (and decodes afterwards), `max-size` (and later deltas gate). An adapter whose probe declares no decoder on a machine that claims hardware fails; one that reports no hardware skips. The fake decoder in `rbs-codec/tests/decoder_suite.rs` checks the suite with one broken invariant per test. Each adapter adds its own tests for memory kinds, pool exhaustion (hold every picture; leases never exceed `max_surfaces()`; decoding continues after release), dropping the decoder while holding pictures, a two-resolution clip (invariant 7) and its own lease accounting; a machine without the decoder skips with a reason.
+
+Implementation status (2026-11-28, not merged; the contract is still Draft): `rbs-codec-mf` has `MfH264DecoderFactory` (`org.rbs.codec.mf-h264-decode`, module `decode`) over Microsoft's H.264 decoder MFT. Annex B only (`LengthPrefixed` is refused at `create` with `Unsupported`); native output is DXVA on `adapter_luid` copied into 1 to 8 shared NV12 NT-handle textures, otherwise software decode to system memory. The system-memory path is the counted CPU-copy fallback (P4): one new NV12 buffer per picture, `cpu_copies` per picture, `max_surfaces()` 0; it is not pooled, because the guest source asks for native output and the owner judged pooling unnecessary (2026-11-28). Both copies apply the SPS crop; colour comes from the VUI (BT.709 limited when absent). Fallbacks are logged once at Warn in `Area::Encode`. An MFT refusal of the stream from a decode call (`MF_E_UNSUPPORTED_FORMAT`, `MF_E_INVALIDMEDIATYPE`, `MF_E_INVALIDTYPE`, `MF_E_UNSUPPORTED_D3D_TYPE`, `MF_E_UNSUPPORTED_RATE`, `MF_E_HW_MFT_FAILED_START_STREAMING`, `E_NOTIMPL`) is `Unsupported`; a removed, reset or hung device is `DeviceLost`. `tests/studio_import.rs` imports native pictures through the `rbs-gpu` D3D12 importer and checks their colours and slot reuse. Its tests run the suite for both memory kinds with clips encoded at test time by Microsoft's H.264 encoder.
+
+Out of scope here: the guest source node, depacketizing, the token bucket (ADR-0139, owned by the guest source), audio decode (`rbs-codec-opus`).
+
 ## Capability model
 
 Capabilities are data, not code, so they can be logged, shown in the UI, compared in tests and sent across plugin boundaries.
@@ -100,6 +143,35 @@ Replacing a technology (for example FFmpeg) therefore means: add adapters, make 
 - Factories are `Send + Sync`. Session objects are `Send`, driven from one thread at a time.
 - Adapters that need their own threads create and own them, and stop them in `Drop`.
 - Port methods called from real-time threads are marked in the trait docs and must follow principle P6.
+
+## Live decoders
+
+`rbs-codec` also holds the decode traits for streams that arrive as packets (ADR-0139 decision 2). `rbs-media-decode` stays the port for files, because a file port owns demuxing and seeking that a live stream does not have. Only the audio half exists so far; `VideoDecoder` is specified with the first video decoder adapter (phase 1c).
+
+```rust
+pub trait AudioDecoderFactory: AdapterFactory {
+    fn create(&self, config: &AudioDecoderConfig) -> Result<Box<dyn AudioDecoder>, CreateError>;
+}
+
+pub trait AudioDecoder: Send {
+    fn format(&self) -> AudioFormat;
+    /// Most sample frames one call can produce; reserve `max_frames() * channels` and `decode` never allocates.
+    fn max_frames(&self) -> usize;
+    /// hot. Clears `out`, fills it with interleaved `f32`, returns the sample frames per channel.
+    fn decode(&mut self, packet: &EncodedPacket, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
+    /// hot. Concealment for a packet that never arrived.
+    fn conceal(&mut self, frames: usize, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
+    fn reset(&mut self); // cannot fail: an adapter whose state cannot be cleared recreates it
+}
+```
+
+- `AudioDecoderConfig` names the codec, the output `AudioFormat`, the codec's setup data (`extradata`, for Opus an optional `OpusHead`) and opaque `adapter_options`.
+- The caller owns timing: the decoder sees packets and lengths, never clocks. Reordering, jitter buffering and the choice between `decode` and `conceal` belong to the guest source, not to the decoder.
+- Errors are typed (`DecodeError`: `InvalidInput`, `Corrupt`, `Failed`). A corrupt packet leaves the session usable. No panic crosses the port.
+- Capability key `codec.audio.decode` (Set of codec names) next to `codec.audio.sample_rates` and `codec.audio.channels.max`.
+- Rounding: the caller rounds a concealment length to the codec's granularity (Opus: 120 sample frames); a decoder refuses other lengths with `InvalidInput`.
+- Planned additions, as provided methods so existing adapters keep compiling (found by the independent review, needed by the guest source's jitter buffer): `packet_frames(&EncodedPacket)` (frames a packet decodes to, without decoding it), and `decode_fec(next, frames, out)` with a `codec.audio.fec` capability and a new `DecodeError::Unsupported`.
+- Status: trait and `DecodeError` are in `rbs-codec`; the Opus adapter is `rbs-codec-opus`. There is no decoder conformance suite yet; the Opus tests and the RFC 8251 vectors stand in for it until a second adapter exists.
 
 ## Conformance tests
 

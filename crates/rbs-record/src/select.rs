@@ -75,6 +75,20 @@ fn video_requirement(config: &VideoEncoderConfig) -> Requirement {
         )
 }
 
+/// True when `id` lists `bitrate` in `codec.reconfigure` (ADR-0139 decision 8).
+pub(crate) fn declares_bitrate(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    id: &AdapterId,
+) -> bool {
+    matches!(
+        registry
+            .capabilities(id)
+            .and_then(|c| c.get(&rbs_codec::caps::RECONFIGURE)),
+        Some(rbs_core::capability::CapabilityValue::Set(values))
+            if values.iter().any(|v| v == rbs_codec::caps::RECONFIGURE_BITRATE)
+    )
+}
+
 /// True when the video encoder adapter `id` declares `codec.reconfigure: keyframe`:
 /// it honours a keyframe request (ADR-0124 decision 7).
 pub(crate) fn declares_keyframe(

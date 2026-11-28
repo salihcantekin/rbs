@@ -813,6 +813,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-codec-mf"
         | "rbs-codec-pcm"
         | "rbs-codec-flac"
+        | "rbs-codec-opus"
         | "rbs-mux-mpegts"
         | "rbs-mux-wav"
         | "rbs-mux-flac"

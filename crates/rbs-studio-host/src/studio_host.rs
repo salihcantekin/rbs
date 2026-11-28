@@ -84,6 +84,7 @@ pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
 mod control_out;
+mod guest_host;
 mod log_summary;
 mod loudness;
 mod monitor;
@@ -91,6 +92,10 @@ mod network;
 mod obs_import_api;
 mod on_air;
 pub mod protection;
+pub use guest_host::PeerFactoryHandle;
+pub mod guest_share;
+#[cfg(test)]
+mod guest_share_tests;
 pub mod replay;
 mod scene_cache;
 mod stinger;
@@ -659,6 +664,8 @@ struct Host {
     loudness_state: loudness::LoudnessState,
     /// The replay buffer's settings and state (ADR-0088).
     replay: replay::ReplayHost,
+    /// Guest shares (ADR-0139).
+    guests: guest_host::GuestHost,
     /// Recording protection while an output runs (ADR-0090).
     protection: protection::ProtectionHost,
 }

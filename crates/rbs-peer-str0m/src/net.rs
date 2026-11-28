@@ -3,6 +3,7 @@
 //! thread reads a small shared snapshot and sends commands. Created only by
 //! `create_invite` or `accept_invite` (P13); it ends with the pairing.
 
+use crate::share_transport::{GuestShareTransports, Shares};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
@@ -20,6 +21,7 @@ use rbs_peer::{
 use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::engine::{Engine, Phase, Setup};
+use crate::link::{OwnerSide, WebRtcMedia};
 use crate::stun::TransactionId;
 
 /// Registry type id of this adapter.
@@ -30,11 +32,6 @@ const LOOP_WAIT: Duration = Duration::from_millis(20);
 const REPLY_WAIT: Duration = Duration::from_secs(2);
 /// A UDP datagram's largest size.
 const RECV_BUFFER: usize = 2048;
-
-/// The media path of a session. Its packet queues arrive with the guest share output
-/// and the guest source (ADR-0139 phases 1b and 1c); until then it carries nothing.
-#[derive(Debug, Default)]
-pub struct WebRtcMedia {}
 
 /// What the control thread sees of a pairing.
 #[derive(Debug)]
@@ -121,6 +118,7 @@ type Build = Box<
 struct Owner {
     commands: Sender<Command>,
     shared: Shared,
+    media: Arc<WebRtcMedia>,
     /// Dropped, not joined, on close: the thread may be inside a DNS lookup, and a
     /// close must not block the caller. It ends at its next loop turn.
     thread: Option<JoinHandle<()>>,
@@ -138,13 +136,21 @@ impl Owner {
             .map_err(|_| PeerError::Io("cannot open a UDP socket".into()))?;
         let (commands, rx) = mpsc::channel();
         let owned = Arc::clone(&shared);
+        let media = WebRtcMedia::new();
+        let link = OwnerSide::new(&media, &socket);
+        let pairing = Pairing {
+            session_id,
+            side,
+            lifetime,
+        };
         let thread = std::thread::Builder::new()
             .name("rbs-peer".into())
-            .spawn(move || owner_main(socket, session_id, side, lifetime, owned, build, rx))
+            .spawn(move || owner_main(socket, pairing, owned, build, rx, link))
             .map_err(|_| PeerError::Io("cannot start the pairing thread".into()))?;
         Ok(Self {
             commands,
             shared,
+            media,
             thread: Some(thread),
         })
     }
@@ -180,18 +186,25 @@ impl Drop for Owner {
 
 /// The owner thread: runs the pairing, then makes sure the snapshot shows an end
 /// (also after a panic, which `rbs_crash` reports) and forgets the secrets.
-fn owner_main(
-    socket: UdpSocket,
+/// What one pairing starts with.
+struct Pairing {
     session_id: SessionId,
     side: SideSettings,
     lifetime: Duration,
+}
+
+fn owner_main(
+    socket: UdpSocket,
+    pairing: Pairing,
     shared: Shared,
     build: Build,
     commands: Receiver<Command>,
+    mut link: OwnerSide,
 ) {
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        run(socket, session_id, side, lifetime, &shared, build, commands);
+        run(socket, pairing, &shared, build, commands, &mut link);
     }));
+    link.end();
     let mut s = lock(&shared);
     s.fail(if outcome.is_err() {
         FailureReason::Disconnected
@@ -205,13 +218,17 @@ fn owner_main(
 
 fn run(
     socket: UdpSocket,
-    session_id: SessionId,
-    side: SideSettings,
-    lifetime: Duration,
+    pairing: Pairing,
     shared: &Shared,
     build: Build,
     commands: Receiver<Command>,
+    link: &mut OwnerSide,
 ) {
+    let Pairing {
+        session_id,
+        side,
+        lifetime,
+    } = pairing;
     let rng = SystemRandom::new();
     // Transaction ids must be unpredictable (an off-path host could otherwise forge a
     // STUN answer); with no working random source the pairing does not start.
@@ -269,6 +286,7 @@ fn run(
         }
         let now = Instant::now();
         engine.handle_timeout(now, &mut ids);
+        link.pump(&mut engine, now);
         while let Some((to, bytes)) = engine.poll_transmit() {
             // A send error (no route, buffer full) is a lost datagram; ICE retries.
             let _ = socket.send_to(&bytes, to);
@@ -279,10 +297,17 @@ fn run(
         }
         let wait = engine.next_timeout(now).saturating_duration_since(now);
         let wait = wait.clamp(Duration::from_millis(1), LOOP_WAIT);
+        if link.before_wait() {
+            link.after_wait();
+            continue;
+        }
         if socket.set_read_timeout(Some(wait)).is_err() {
             return; // `owner_main` ends the pairing.
         }
-        match socket.recv_from(&mut buf) {
+        let got = socket.recv_from(&mut buf);
+        link.after_wait();
+        match got {
+            Ok((n, from)) if link.is_wake(from, &buf[..n]) => {}
             Ok((n, from)) => engine.handle_datagram(Instant::now(), from, &buf[..n]),
             Err(e)
                 if matches!(
@@ -328,7 +353,23 @@ fn snapshot(expires_at_unix: u64) -> Shared {
 
 /// The WebRTC pairing factory (`org.rbs.peer.webrtc`).
 #[derive(Debug, Default)]
-pub struct WebRtcPeerFactory;
+pub struct WebRtcPeerFactory {
+    /// Its sharing sessions, for [`WebRtcPeerFactory::share_transports`].
+    shares: Arc<Shares>,
+}
+
+impl WebRtcPeerFactory {
+    /// A factory with no sessions.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The transport factory that opens this factory's sharing sessions as outputs
+    /// to [`share_url`](crate::share_url) (peer-port.md, "Share transport").
+    pub fn share_transports(&self) -> GuestShareTransports {
+        GuestShareTransports::new(Arc::clone(&self.shares))
+    }
+}
 
 impl PeerFactory for WebRtcPeerFactory {
     fn type_id(&self) -> &'static str {
@@ -361,6 +402,7 @@ impl PeerFactory for WebRtcPeerFactory {
             shared,
             owner: Some(owner),
             code: OnceLock::new(),
+            shares: Arc::clone(&self.shares),
         }))
     }
 
@@ -392,13 +434,14 @@ impl PeerFactory for WebRtcPeerFactory {
             Arc::clone(&shared),
             build,
         )?;
+        let media = owner.media.handle();
         Ok(Box::new(Session {
             session_id: envelope.session_id,
             role: PeerRole::Answerer,
             shared,
             owner,
             code: OnceLock::new(),
-            media: MediaHandle::new(Arc::new(WebRtcMedia::default())),
+            media,
         }))
     }
 }
@@ -408,6 +451,7 @@ struct Invite {
     shared: Shared,
     owner: Option<Owner>,
     code: OnceLock<PairingCode>,
+    shares: Arc<Shares>,
 }
 
 impl PendingInvite for Invite {
@@ -442,13 +486,15 @@ impl PendingInvite for Invite {
         let text = answer.to_owned();
         owner.ask(|reply| Command::AcceptAnswer(text, reply))?;
         let owner = self.owner.take().ok_or(PeerError::AlreadyUsed)?;
+        self.shares.add(self.session_id, &owner.media);
+        let media = owner.media.handle();
         Ok(Box::new(Session {
             session_id: self.session_id,
             role: PeerRole::Offerer,
             shared: Arc::clone(&self.shared),
             owner,
             code: OnceLock::new(),
-            media: MediaHandle::new(Arc::new(WebRtcMedia::default())),
+            media,
         }))
     }
 

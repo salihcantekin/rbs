@@ -1,6 +1,6 @@
 [package]
 name = "rbs-codec-mf"
-description = "Media Foundation adapter for the RBS encoder port: AAC-LC on Windows."
+description = "Media Foundation adapters on Windows: AAC-LC encoder and live H.264 decoder."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,8 @@ publish.workspace = true
 
 [features]
 # A fake encoder engine behind the same session, so the port suite and the
-# adapter's behaviour tests run on every platform (as in rbs-codec-hw).
+# adapter's behaviour tests run on every platform (as in rbs-codec-hw), and on
+# Windows an H.264 clip maker for the decoder tests.
 testing = []
 
 [dependencies]
@@ -20,11 +21,19 @@ rbs-core = { path = "../rbs-core" }
 rbs-media-format = { path = "../rbs-media-format" }
 
 [target.'cfg(windows)'.dependencies]
+# The slot ring and graveyard of native decoded pictures (as rbs-media-mf).
+rbs-capture = { path = "../rbs-capture" }
 # Microsoft's official bindings (MIT OR Apache-2.0), same version as rbs-capture-mf.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
+    "Win32_Security",
     "Win32_System_Com",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
@@ -32,6 +41,15 @@ rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
 rbs-codec-mf = { path = ".", features = ["testing"] }
 # Micro-benchmarks for the encode path (measure-performance skill, ADR-0009).
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# The studio side of the native pictures: the D3D12 importer and the compositor
+# (tests/studio_import.rs). A dev-dependency only; the adapter never uses it.
+rbs-gpu = { path = "../rbs-gpu" }
+
+[[example]]
+name = "decode_bench"
+required-features = ["testing"]
 
 [[bench]]
 name = "encode"

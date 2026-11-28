@@ -11,6 +11,8 @@ pub use rbs_core::registry::HARDWARE;
 pub const VIDEO_ENCODE: CapabilityKey = CapabilityKey::new_static("codec.video.encode");
 /// Set: audio codecs the adapter encodes (`aac`, `opus`, `pcm`, `flac`).
 pub const AUDIO_ENCODE: CapabilityKey = CapabilityKey::new_static("codec.audio.encode");
+/// Set: audio codecs the adapter decodes from live packets (`opus`).
+pub const AUDIO_DECODE: CapabilityKey = CapabilityKey::new_static("codec.audio.decode");
 /// Set: `<codec>.<profile>` names, for example `h264.high`, `hevc.main10`.
 pub const VIDEO_PROFILES: CapabilityKey = CapabilityKey::new_static("codec.video.profiles");
 /// Set: bit depths, `8` and/or `10`.
@@ -46,3 +48,20 @@ pub const RECONFIGURE_KEYFRAME: &str = "keyframe";
 /// Values of [`VIDEO_RATE_CONTROL`], matching [`crate::RateControl::name`].
 /// A slice, so that adding a mode stays a minor change.
 pub const RATE_CONTROL_NAMES: &[&str] = &["cbr", "cbr_padded", "vbr", "constant_quality"];
+
+/// Set: video codecs the adapter decodes from live packets (`h264`).
+pub const VIDEO_DECODE: CapabilityKey = CapabilityKey::new_static("codec.video.decode");
+/// Set: memory kinds a decoder session can hand out (`MemoryKind` names; `system` is
+/// always possible).
+pub const DECODE_OUTPUT_MEMORY: CapabilityKey = CapabilityKey::new_static("decode.output_memory");
+/// Set: `<codec>.<profile>` names a decoder accepts (`h264.high`).
+pub const VIDEO_DECODE_PROFILES: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.profiles");
+/// IntRange: picture widths a decoder accepts.
+pub const VIDEO_DECODE_WIDTH: CapabilityKey = CapabilityKey::new_static("codec.video.decode.width");
+/// IntRange: picture heights a decoder accepts.
+pub const VIDEO_DECODE_HEIGHT: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.height");
+/// Int: highest frame rate at the largest size a decoder keeps up with.
+pub const VIDEO_DECODE_FPS_MAX: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.fps.max");

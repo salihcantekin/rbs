@@ -25,7 +25,7 @@ fn wait(what: &str, done: &mut dyn FnMut() -> bool) {
 #[ignore = "slow: real sockets and threads"]
 fn slow_conformance_over_loopback() {
     run_all(&Harness {
-        factory: &WebRtcPeerFactory,
+        factory: &WebRtcPeerFactory::new(),
         side: SideSettings::with_stun_servers(Vec::new()),
         wait: &wait,
     });

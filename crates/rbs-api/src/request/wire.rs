@@ -225,6 +225,18 @@ pub(crate) enum WireRequest {
     BusSet(SetBus),
     #[serde(rename = "source.set_sends")]
     SourceSetSends(SetSourceSends),
+    #[serde(rename = "guest.share")]
+    GuestShare(GuestShare),
+    #[serde(rename = "guest.share.code")]
+    GuestShareCode(GuestShareRef),
+    #[serde(rename = "guest.share.accept_answer")]
+    GuestAcceptAnswer(GuestAcceptAnswer),
+    #[serde(rename = "guest.share.confirm")]
+    GuestShareConfirm(GuestShareRef),
+    #[serde(rename = "guest.share.stop")]
+    GuestShareStop(GuestShareRef),
+    #[serde(rename = "guest.status")]
+    GuestStatus(Empty),
     #[serde(rename = "group.create")]
     GroupCreate(CreateGroup),
     #[serde(rename = "group.remove")]
@@ -522,6 +534,12 @@ wire_conversions! {
         WireRequest::BusRemove(p) => Request::Command(C::Bus(BusCommand::Remove(p))),
         WireRequest::BusSet(p) => Request::Command(C::Bus(BusCommand::Set(p))),
         WireRequest::SourceSetSends(p) => Request::Command(C::Bus(BusCommand::SetSends(p))),
+        WireRequest::GuestShare(p) => Request::Command(C::Guest(GuestCommand::Share(p))),
+        WireRequest::GuestShareCode(p) => Request::Command(C::Guest(GuestCommand::ShareCode(p))),
+        WireRequest::GuestAcceptAnswer(p) => Request::Command(C::Guest(GuestCommand::AcceptAnswer(p))),
+        WireRequest::GuestShareConfirm(p) => Request::Command(C::Guest(GuestCommand::Confirm(p))),
+        WireRequest::GuestShareStop(p) => Request::Command(C::Guest(GuestCommand::Stop(p))),
+        WireRequest::GuestStatus(_) => Request::Command(C::Guest(GuestCommand::Status)),
     }
     to_wire {
         Request::Ui(crate::ui::UiRequest::List { client }) => WireRequest::UiList(crate::ui::UiList { client }),
@@ -569,6 +587,12 @@ wire_conversions! {
         C::Bus(BusCommand::Remove(p)) => WireRequest::BusRemove(p),
         C::Bus(BusCommand::Set(p)) => WireRequest::BusSet(p),
         C::Bus(BusCommand::SetSends(p)) => WireRequest::SourceSetSends(p),
+        C::Guest(GuestCommand::Share(p)) => WireRequest::GuestShare(p),
+        C::Guest(GuestCommand::ShareCode(p)) => WireRequest::GuestShareCode(p),
+        C::Guest(GuestCommand::AcceptAnswer(p)) => WireRequest::GuestAcceptAnswer(p),
+        C::Guest(GuestCommand::Confirm(p)) => WireRequest::GuestShareConfirm(p),
+        C::Guest(GuestCommand::Stop(p)) => WireRequest::GuestShareStop(p),
+        C::Guest(GuestCommand::Status) => WireRequest::GuestStatus(Empty {}),
     }
     same [
     SourceTargets, SourceAdd, SourceDelete, ItemSetStyle, ItemSetCrop, ItemFlip, ItemRotate,

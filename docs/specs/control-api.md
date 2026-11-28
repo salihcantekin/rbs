@@ -701,6 +701,28 @@ to `invalid_params` with the message below.
   group Scroll never composes a nested scene or a nested group. The picture and
   all-or-none preflight rules of 1.111 otherwise remain.
 
+### Protocol 1.116: guest shares (ADR-0139 decisions 9, 10, 13 and 14)
+
+This RBS sends the main canvas's program to another RBS. The pairing is the `rbs-peer` port's (`peer-port.md`); the share is an output that owns its encoder chain (`recording.md`, "Outputs that own their chain"). Codes are returned only by `guest.share.code` to `admin` tokens, and never appear in an event, a log line or a `Debug` print. `guest.share` and `guest.share.accept_answer` open connections, so a token without "Allow actions that cannot be undone" gets `not_permitted` with `data.reason` `network` (`Command::reaches_network`).
+
+- **`guest.share`** (`admin`, `live`): `{lifetime_s?, check_phrase?, local_only?, video?: {width, height, bitrate_kbps}}` → `{share, state}`. Defaults: 600 s, check on, STUN on, 1280x720 at 2500 kbit/s; bounds 60 to 1800 s, even sizes from 320x180 to 1920x1080, 300 to 8000 kbit/s (`invalid_params` outside). The frame rate is the canvas's. It reserves one output and one chain slot at once (`conflict` with `data.reason` `too_many_outputs` or `no_encoder_slot`, and nothing opened), and is refused with `conflict` and `data.reason` `guest_return_feed` while the program draws a guest source. At most two shares run (`conflict`).
+- **`guest.share.code`** (`admin`, `read`): `{share}` → `{code, expires_at}`; `conflict` while the code is still being made or after the answer was taken.
+- **`guest.share.accept_answer`** (`admin`, `live`): `{share, answer}` → `{state}`. A bad answer is `invalid_params` with `data.reason` one of `guest_not_a_code`, `guest_code_damaged`, `guest_code_newer`, `guest_code_transport`, `guest_code_wrong_kind`, `guest_code_wrong_session` or `guest_expired`, and the share keeps waiting.
+- **`guest.share.confirm`** (`admin`, `live`): `{share}` → `{state}`; this side's user compared the check phrase. `conflict` before the pairing is connected. The output starts once this side is confirmed (or the check is off) and DTLS is up.
+- **`guest.share.stop`** (`control`, `live`): `{share}` → `{}`; closes the pairing, stops the output, gives the slots back.
+- **`guest.status`** (`read`): a snapshot of `{shares: [{share, state, phrase?, reason?, expires_at?, width, height, bitrate_kbps}]}`, oldest first; an ended share stays until the next `guest.share`. `state` is `gathering`, `waiting_for_answer`, `connecting`, `check_phrase`, `live`, `failed` or `closed`; `reason` is a `guest_*` id (`peer-port.md`), `guest_return_feed` or `guest_output_failed`; `phrase` is the six check words (not a secret).
+- **Topic `guest.changed`** (state): the `guest.status` data, sent on every change. It never carries a code.
+
+- **Without a pairing adapter** (a build without `rbs-peer-str0m`), `guest.share` is `conflict` ("guest sharing is not available in this build").
+- **Scopes.** ADR-0139 decision 14 gives no scope for `guest.share.confirm`; it is `admin` because confirming is what lets media flow to the other computer, the same weight as making the code. `guest.share.stop` only closes things, so a `control` token may stop a share.
+- **Whole status.** `guest.changed` carries the whole `guest.status` data, not a per-share delta (at most two shares, so one small payload), so a client that missed one event is right again after the next.
+- **Deadlines.** A share that has its answer but is not live 10 minutes later (the longest answer lifetime) fails with `guest_expired` and gives its slots back. A confirmed share whose chain slot still drains from a stopped output is tried again for up to 5 s before it fails with `guest_output_failed`.
+- **Logging.** Each state change is one `remote` line with the share id, the state and the reason id; never a code, a phrase or an address.
+
+A studio restart (a canvas or profile change) or a stop of the studio ends every share, and `guest.changed` follows; new codes are needed. Guest sources (`guest.source.*`, the host side) come with the guest source node in a later minor version.
+
+Open in 1.116 (listed in `status.md`): the ADR-0087 estimate does not yet add a planned output for a reserved share (a live share counts as a running output); the share's keyframe interval is the encoder's 2 s default, not decision 8's 1 s; the return-feed check reads the program scene only, not a bound hold scene; the share's Opus audio chain is not reserved (audio chains are rarely all taken, and a start that finds none fails with `guest_output_failed`); and the check finds a guest source by its type id until the guest source registers a flag for it.
+
 ### Protocol 1.115: audio buses (ADR-0097 decisions 12 and 13, ADR-0170 decision 9)
 
 A 1.114 server is the last without these methods. Buses belong to the main canvas; `main` is its master (`canvas.set_master_volume`, `canvas.set_master_muted`) and is never listed, added, removed or renamed. A vertical canvas has no buses. Names are trimmed by the server (in requests and when profile references are compared) and then compared exactly; `main` is reserved, other spellings such as `Main` are ordinary names.
