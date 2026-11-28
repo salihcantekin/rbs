@@ -7,7 +7,6 @@
 //!
 //! [`Engine`]: crate::engine::Engine
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -103,11 +102,9 @@ pub struct MediaState {
     audio: Option<Mid>,
     video_pt: Option<Pt>,
     audio_pt: Option<Pt>,
-    received: VecDeque<Received>,
+    received: crate::receive_queue::ReceiveQueue,
     estimate: Option<u64>,
     counters: MediaCounters,
-    /// A received frame was dropped: the next one is marked not contiguous.
-    gap_next: bool,
 }
 
 impl MediaState {
@@ -220,34 +217,37 @@ impl MediaState {
             self.counters.gated += 1;
             return;
         }
-        if self.received.len() >= MAX_RECEIVED
-            && let Some(lost) = self.received.pop_front()
-        {
-            self.counters.overflow += 1;
-            self.counters.overflow_bytes += lost.data.len() as u64;
-            self.gap_next = true;
-        }
         let capture_nanos = data.ext_vals.abs_capture_time.and_then(|t| {
             t.capture_time
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .ok()
                 .and_then(|d| u64::try_from(d.as_nanos()).ok())
         });
-        self.received.push_back(Received {
-            track,
-            data: Arc::clone(&data.data),
-            rtp_time: data.time.numer(),
-            capture_nanos,
-            keyframe: track == Track::Video && data.is_keyframe(),
-            contiguous: data.contiguous && !std::mem::take(&mut self.gap_next),
-            arrived: data.network_time,
-        });
+        self.received.push(
+            Received {
+                track,
+                data: Arc::clone(&data.data),
+                rtp_time: data.time.numer(),
+                capture_nanos,
+                keyframe: track == Track::Video && data.is_keyframe(),
+                contiguous: data.contiguous,
+                arrived: data.network_time,
+            },
+            MAX_RECEIVED,
+        );
         self.counters.received += 1;
+        self.counters.overflow = self.received.overflow;
+        self.counters.overflow_bytes = self.received.overflow_bytes;
     }
 
     /// The next received frame.
     pub fn poll_received(&mut self) -> Option<Received> {
-        self.received.pop_front()
+        self.received.pop()
+    }
+
+    /// True once after the queue dropped a video frame: ask for a keyframe.
+    pub fn take_lost_video(&mut self) -> bool {
+        self.received.take_lost_video()
     }
 
     /// The latest congestion estimate in bits per second.

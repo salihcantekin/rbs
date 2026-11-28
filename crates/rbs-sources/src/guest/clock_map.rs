@@ -5,8 +5,9 @@
 //! jitter. The smallest gap of each second is the frame that met the least delay, so
 //! the map is `gap(sender) = offset + drift * (sender - fit_at)`, refitted once a
 //! second: the drift is a least-squares line through the minimums of the last 60
-//! completed seconds (bounded to +-500 ppm, minimums far above the line left out),
-//! the offset the median of the last 10 minimums carried along it. The map in use
+//! completed seconds of the current delay level (bounded to +-500 ppm, minimums far
+//! above the line left out; a median 5 ms off the map starts a new level), the offset
+//! the median of the last 10 minimums carried along it. The map in use
 //! moves toward a new fit by at most 1 ms per second of sender time, so a route
 //! change does not jump every release time; a change above 50 ms is a resync, applied
 //! at once and counted. One map serves picture and sound, so both keep their sync,
@@ -28,6 +29,10 @@ pub const RESYNC_NS: f64 = 50_000_000.0;
 const OUTLIER_NS: f64 = 10_000_000.0;
 /// The offset is the median of this many most recent seconds.
 const OFFSET_SLOTS: usize = 10;
+/// A median this far from the map in use marks a new delay level.
+const LEVEL_NS: f64 = 5_000_000.0;
+/// The drift is fitted again only from this many seconds of one level.
+const MIN_DRIFT_SLOTS: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
 struct Slot {
@@ -63,6 +68,8 @@ pub struct ClockMap {
     applied: Option<Line>,
     /// The second of the last refit.
     last_closed: u64,
+    /// The first second of the current delay level.
+    level_from: u64,
     resyncs: u64,
 }
 
@@ -81,6 +88,7 @@ impl ClockMap {
             slots: [None; FIT_SECONDS],
             applied: None,
             last_closed: 0,
+            level_from: 0,
             resyncs: 0,
         }
     }
@@ -147,11 +155,17 @@ impl ClockMap {
         let oldest = closed.saturating_sub(FIT_SECONDS as u64 - 1);
         let live = |s: &&Slot| s.second >= oldest && s.second <= closed;
         let slots = || self.slots.iter().flatten().filter(live);
-        let Some(first) = fit(slots(), None) else {
-            return;
+        // The drift from the seconds since the last level change, without seconds far
+        // above a first line; too few of them keep the drift in use.
+        let from = self.level_from.max(oldest);
+        let level = || slots().filter(move |s| s.second >= from);
+        let previous = self.applied.map(|l| l.drift);
+        let drift = match fit(level(), None) {
+            Some(first) if level().count() >= MIN_DRIFT_SLOTS || previous.is_none() => {
+                fit(level(), Some(first)).unwrap_or(first).drift
+            }
+            _ => previous.unwrap_or(0.0),
         };
-        // The drift from the whole window, without seconds far above the first line.
-        let drift = fit(slots(), Some(first)).unwrap_or(first).drift;
         // The offset now: the median of the last seconds' minimums, carried to now
         // along the drift, so one far-off second does not move it.
         let now = (closed as f64 + 1.0) * SLOT_NS as f64;
@@ -181,6 +195,11 @@ impl ClockMap {
             return;
         };
         let step = offset - applied.gap(now);
+        if step.abs() > LEVEL_NS {
+            // The least delay moved to a new level about half the median's window ago:
+            // fit the drift from there on, so the step does not tilt it.
+            self.level_from = (closed + 1).saturating_sub(OFFSET_SLOTS as u64 / 2);
+        }
         if step.abs() > RESYNC_NS {
             self.resyncs += 1;
             self.applied = Some(target);
@@ -326,8 +345,28 @@ mod tests {
             "moved {moved} ns in 10 s"
         );
         assert_eq!(m.resyncs(), 0);
+        // The slew takes about 20 s for 20 ms. After it, while the drift fit still
+        // carries the step (seconds 60 to 90), the map stays close.
+        feed(&mut m, &mut noise, 1200, 1800, 20_000_000);
+        let mut worst = 0_u64;
+        for second in 60..90_u64 {
+            feed(
+                &mut m,
+                &mut noise,
+                second * 30,
+                second * 30 + 30,
+                20_000_000,
+            );
+            let s = at(second * 30 + 30);
+            let want = s + OFFSET + DELAY + 20_000_000;
+            worst = worst.max(m.map(s).unwrap().as_nanos().abs_diff(want));
+        }
+        assert!(
+            worst < 3_000_000,
+            "worst {worst} ns while the fit carries the step"
+        );
         // Once the window holds only the new delay, the map and drift are right again.
-        feed(&mut m, &mut noise, 1200, 4200, 20_000_000);
+        feed(&mut m, &mut noise, 2700, 4200, 20_000_000);
         let s = at(4200);
         let off = m
             .map(s)
@@ -372,10 +411,10 @@ mod tests {
     #[test]
     fn the_drift_is_bounded_and_a_restarted_sender_starts_over() {
         let mut m = ClockMap::new();
-        for i in 0..10 {
+        for i in 0..20 {
             let s = START + i * SLOT_NS;
-            // 10 ms more each second: 10 000 ppm, far beyond the bound.
-            m.observe(s, Timestamp::from_nanos(s + OFFSET + i * 10_000_000));
+            // 1 ms more each second: 1000 ppm, twice the bound.
+            m.observe(s, Timestamp::from_nanos(s + OFFSET + i * 1_000_000));
         }
         assert!((m.drift_ppm().unwrap() - MAX_DRIFT_PPM).abs() < 1e-6);
         m.observe(1_000, Timestamp::from_nanos(OFFSET));
