@@ -23,9 +23,15 @@ pub struct GuestPage {
 
 /// Opens the window for `sharing`, or brings it forward when one is open.
 pub fn open(ctx: &Ctx, app: &mut App, sharing: bool) {
+    let flow = if sharing { Flow::Share } else { Flow::Host };
     if let Some(page) = &app.guest {
-        window_place::raise(page.window.window());
-        return;
+        if page.session.flow() == flow {
+            window_place::raise(page.window.window());
+            return;
+        }
+        // The other flow was asked for: end the pairing that is still being made and
+        // open the new page.
+        close(app);
     }
     let Ok(w) = GuestWindow::new() else {
         app.show_error(crate::UiError::Other(
@@ -45,7 +51,6 @@ pub fn open(ctx: &Ctx, app: &mut App, sharing: bool) {
         slint::CloseRequestResponse::HideWindow
     });
     install(&w, ctx);
-    let flow = if sharing { Flow::Share } else { Flow::Host };
     let mut page = GuestPage {
         window: w,
         session: Session::new(flow),

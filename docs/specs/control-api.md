@@ -516,6 +516,10 @@ Some commands change the state of one UI client, not of the engine: for example 
   routed call must reauthorize against the live session, not trust this snapshot after
   a disconnect or token revocation. Independent AI review, 2026-11-24: approved.
 
+### Guest window (ADR-0139 phase 1d)
+
+`ui.guest.share` and `ui.guest.add` open the desktop's guest window (Share program, Add guest). Client-scoped like every `ui.*` method and routed, so not in the schema; scope **`admin`**, like `ui.profile.*`, because the window starts a pairing that sends the program to a peer or takes a guest (ADR-0139 decision 14). They return nothing and show no code to the caller. The window's own `guest.*` calls run as the local desktop user, never through the caller's token. A window closed before the pairing is live ends the pairing. Protocol version: the same minor as the `guest.*` methods.
+
 ### Projectors (ADR-0125)
 
 Client-scoped like every `ui.*` method, scope `control`; routed, so not in the schema, and the routing is not built yet (see [status](../status.md)). The desktop window runs the same commands from its menus through the registry: `ui.projector.open?canvas=main|vertical` (opens the projector, or brings an open one to the front), `ui.projector.size?canvas=...&size=window|exact|display:<name>` and `ui.projector.close?canvas=...`.
