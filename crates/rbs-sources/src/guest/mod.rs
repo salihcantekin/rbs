@@ -6,11 +6,16 @@
 //! audio thread, and takes time as an argument so tests drive it without a clock.
 
 pub mod bucket;
+pub mod checks;
 pub mod clock_map;
 pub mod jitter;
 pub mod timing;
+pub mod worker;
+#[cfg(test)]
+mod worker_tests;
 
 pub use bucket::TokenBucket;
 pub use clock_map::ClockMap;
 pub use jitter::{JitterBuffer, Pushed, Queued};
 pub use timing::{Timed, TrackTiming};
+pub use worker::{GuestCounts, GuestEnd, GuestSink, GuestWorker, MakeVideoDecoder, WorkerSettings};

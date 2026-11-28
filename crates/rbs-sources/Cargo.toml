@@ -28,6 +28,10 @@ rbs-params = { path = "../rbs-params" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-media-decode = { path = "../rbs-media-decode" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+# The guest source (ADR-0139 phase 1c): the peer port's receiving half and the live
+# decoder ports. Port crates only; the adapters come from the composition root.
+rbs-peer = { path = "../rbs-peer" }
+rbs-codec = { path = "../rbs-codec" }
 bytes = "1.9"
 # Lock-free sound ring between the browser feed and the sound node (as rbs-nodes media).
 rtrb = "0.4"

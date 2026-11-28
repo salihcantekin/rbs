@@ -94,6 +94,10 @@ pub struct Sps {
     pub chroma_format_idc: u8,
     /// Luma bit depth.
     pub bit_depth: u8,
+    /// Chroma bit depth.
+    pub chroma_bit_depth: u8,
+    /// `seq_parameter_set_id` (0 to 31).
+    pub id: u8,
     /// Cropped (display) size.
     pub size: Size,
     /// Coded size (macroblock multiples).
@@ -130,7 +134,11 @@ impl Sps {
             77 | 100 => true,
             _ => false,
         };
-        profile && self.chroma_format_idc == 1 && self.bit_depth == 8 && self.level_idc <= 52
+        profile
+            && self.chroma_format_idc == 1
+            && self.bit_depth == 8
+            && self.chroma_bit_depth == 8
+            && self.level_idc <= 52
     }
 }
 
@@ -144,11 +152,13 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, SpsError> {
     let profile_idc = r.u(8)? as u8;
     let constraint_flags = r.u(8)? as u8;
     let level_idc = r.u(8)? as u8;
-    if r.ue()? > 31 {
+    let id = r.ue()?;
+    if id > 31 {
         return Err(SpsError::Malformed);
     }
     let mut chroma_format_idc = 1;
     let mut bit_depth = 8;
+    let mut chroma_bit_depth = 8;
     if matches!(
         profile_idc,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
@@ -166,6 +176,7 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, SpsError> {
             return Err(SpsError::Malformed);
         }
         bit_depth = 8 + luma_minus8;
+        chroma_bit_depth = 8 + chroma_minus8;
         r.u(1)?; // qpprime_y_zero_transform_bypass_flag
         if r.u(1)? == 1 {
             let lists = if chroma_format_idc != 3 { 8 } else { 12 };
@@ -244,11 +255,49 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, SpsError> {
         level_idc,
         chroma_format_idc: chroma_format_idc as u8,
         bit_depth: bit_depth.min(255) as u8,
+        chroma_bit_depth: chroma_bit_depth.min(255) as u8,
+        id: id as u8,
         size: Size::new(coded.width - crop_w, coded.height - crop_h),
         coded_size: coded,
         crop_left: left.saturating_mul(unit_x),
         crop_top: top.saturating_mul(unit_y),
         color,
+    })
+}
+
+/// Largest PPS NAL unit accepted (header byte included).
+pub const MAX_PPS_BYTES: usize = 256;
+
+/// The ids of a picture parameter set.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pps {
+    /// `pic_parameter_set_id` (0 to 255).
+    pub id: u8,
+    /// `seq_parameter_set_id` of the SPS it refers to (0 to 31).
+    pub sps_id: u8,
+}
+
+/// Parses the ids at the start of a PPS NAL unit (with its header byte): at most
+/// [`MAX_PPS_BYTES`], ids in range. Whether the named SPS is known is the caller's
+/// check. The rest of the PPS is left to the decoder.
+pub fn parse_pps(nal: &[u8]) -> Result<Pps, SpsError> {
+    if nal_type(nal) != Some(NAL_PPS) || nal.len() < 2 {
+        return Err(SpsError::Malformed);
+    }
+    if nal.len() > MAX_PPS_BYTES {
+        return Err(SpsError::Unsupported("PPS size"));
+    }
+    let rbsp = unescape(&nal[1..]);
+    let mut r = Bits::new(&rbsp);
+    let id = r.ue()?;
+    let sps_id = r.ue()?;
+    if id > 255 || sps_id > 31 {
+        return Err(SpsError::Malformed);
+    }
+    Ok(Pps {
+        id: id as u8,
+        sps_id: sps_id as u8,
     })
 }
 
@@ -465,6 +514,58 @@ mod tests {
         w.u(1, 8);
         w.u(1, 8);
         w.nal()
+    }
+
+    #[test]
+    fn reads_the_sps_id_and_refuses_10_bit_chroma() {
+        let sps = parse_sps(&sps_with_vui()).expect("sps");
+        assert_eq!((sps.id, sps.chroma_bit_depth), (0, 8));
+        let mut w = W(Vec::new());
+        w.u(100, 8);
+        w.u(0, 8);
+        w.u(30, 8);
+        w.ue(3); // sps id
+        w.ue(1);
+        w.ue(0);
+        w.ue(2); // chroma 10 bit
+        w.u(0, 1);
+        w.u(0, 1);
+        w.ue(0);
+        w.ue(2);
+        w.ue(1);
+        w.u(0, 1);
+        w.ue(3);
+        w.ue(2);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(0, 1);
+        w.u(0, 1);
+        let sps = parse_sps(&w.nal()).expect("sps");
+        assert_eq!((sps.id, sps.bit_depth, sps.chroma_bit_depth), (3, 8, 10));
+        assert!(!sps.is_allowed_profile());
+    }
+
+    #[test]
+    fn reads_pps_ids_and_bounds_its_size() {
+        let mut w = W(Vec::new());
+        w.ue(5);
+        w.ue(3);
+        let mut pps = w.nal();
+        pps[0] = 0x68;
+        assert_eq!(parse_pps(&pps), Ok(Pps { id: 5, sps_id: 3 }));
+        let mut w = W(Vec::new());
+        w.ue(0);
+        w.ue(32);
+        let mut bad = w.nal();
+        bad[0] = 0x68;
+        assert!(parse_pps(&bad).is_err());
+        let mut long = vec![0x68, 0x80];
+        long.resize(MAX_PPS_BYTES + 1, 0x11);
+        assert!(parse_pps(&long).is_err());
+        assert!(parse_pps(&SPS_1080[..4]).is_err());
+        for n in 0..pps.len() {
+            let _ = parse_pps(&pps[..n]);
+        }
     }
 
     #[test]
