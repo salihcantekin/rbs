@@ -403,9 +403,11 @@ fn limits_and_bounds_are_checked_before_anything_opens() {
         Err(ShareRefusal::Unavailable)
     );
 
-    let mut local = ShareRequest::default();
-    local.local_only = true;
-    local.check_phrase = false;
+    let local = ShareRequest {
+        local_only: true,
+        check_phrase: false,
+        ..ShareRequest::default()
+    };
     let (mut shares, script, mut slots) = rig();
     shares.share(&mut slots, &local).unwrap();
     let settings = script.lock().unwrap().settings.clone().unwrap();
