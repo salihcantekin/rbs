@@ -1981,6 +1981,7 @@ impl Ctx {
             appearance_page::install_picker(&w.global::<Overlays>(), &ctx);
             shortcuts_page::install(&w.global::<Shortcuts>(), &ctx);
             vcam_page::install(&w.global::<VirtualCamera>(), &ctx);
+            guest_page::install_settings(&w, &ctx);
             replay_page::install(&w.global::<ReplayBuffer>(), &ctx);
             let c = ctx.clone();
             w.on_search_edited(move |text| {
@@ -4070,7 +4071,7 @@ pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 39] = [
+const SETTINGS_SECTIONS: [&str; 42] = [
     "settings.add-ons.list",
     "settings.advanced.logging",
     "settings.advanced.report",
@@ -4097,6 +4098,9 @@ const SETTINGS_SECTIONS: [&str; 39] = [
     "settings.recording.encoding",
     "settings.recording.replay",
     "settings.remote.access-tokens",
+    "settings.guests.add",
+    "settings.guests.pairing",
+    "settings.guests.share",
     "settings.remote.other-computers",
     "settings.remote.this-computer",
     "settings.sources.add-global",

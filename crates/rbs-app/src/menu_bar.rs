@@ -1438,6 +1438,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "permissions" => 11,
         "add_ons" => 12,
         "advanced" => 13,
+        "guests" => 14,
         _ => return None,
     })
 }
