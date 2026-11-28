@@ -67,14 +67,14 @@ impl ApiTarget<'_> {
             GuestCommand::Status => {
                 return Ok(Response::GuestStatus(api::Snapshot {
                     seq: {
-                        host.guest_changed(self.notify);
+                        host.guest_changed();
                         host.events.seq_map([Topic::GuestChanged])
                     },
                     data: api_guest_status(&host.guests.shares.status()),
                 }));
             }
         };
-        host.guest_changed(self.notify);
+        host.guest_changed();
         Ok(answer)
     }
 }

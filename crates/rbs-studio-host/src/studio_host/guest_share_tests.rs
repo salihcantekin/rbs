@@ -10,7 +10,11 @@ use rbs_peer::{
     PeerSession, PeerState, PendingInvite, SessionId, TransportKind,
 };
 
+use rbs_core::time::Timestamp;
+
 use super::guest_share::*;
+
+const T0: Timestamp = Timestamp::ZERO;
 
 /// What the fake adapter's invite and session show; the test moves it along.
 #[derive(Default)]
@@ -21,6 +25,7 @@ struct Script {
     confirmed: bool,
     closed: u32,
     settings: Option<InviteSettings>,
+    fail_invite: bool,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -43,6 +48,9 @@ impl PeerFactory for FakeFactory {
         settings: &InviteSettings,
     ) -> Result<Box<dyn PendingInvite>, PeerError> {
         let mut s = self.0.lock().unwrap();
+        if s.fail_invite {
+            return Err(PeerError::Io("no socket".into()));
+        }
         s.invite = Some(InviteState::Gathering);
         s.settings = Some(settings.clone());
         let code = Envelope::new(
@@ -143,6 +151,7 @@ struct Slots {
     started: Vec<(String, u64)>,
     stopped: Vec<u64>,
     fail_start: bool,
+    busy_start: u32,
     failed_output: bool,
     guest_drawn: bool,
 }
@@ -164,9 +173,13 @@ impl ShareStudio for Slots {
         self.reserved.retain(|r| *r != reservation);
         self.free += 1;
     }
-    fn start(&mut self, url: &str, reservation: u64, _: ShareVideo) -> Result<u64, String> {
+    fn start(&mut self, url: &str, reservation: u64, _: ShareVideo) -> Result<u64, StartError> {
         if self.fail_start {
-            return Err("no encoder".into());
+            return Err(StartError::Failed("no encoder".into()));
+        }
+        if self.busy_start > 0 {
+            self.busy_start -= 1;
+            return Err(StartError::Busy);
         }
         self.reserved.retain(|r| *r != reservation);
         self.started.push((url.to_owned(), reservation));
@@ -206,14 +219,14 @@ fn state(shares: &GuestShares) -> ShareState {
 fn connect(shares: &mut GuestShares, script: &Shared, slots: &mut Slots) -> u32 {
     let share = shares.share(slots, &ShareRequest::default()).unwrap();
     script.lock().unwrap().invite = Some(InviteState::Waiting);
-    shares.drive(slots);
+    shares.drive(slots, T0);
     shares.accept_answer(share, "good").unwrap();
     {
         let mut s = script.lock().unwrap();
         s.session = Some(PeerState::Connected { confirmed: false });
         s.events.push(PeerEvent::Connected { phrase: phrase() });
     }
-    shares.drive(slots);
+    shares.drive(slots, T0);
     share
 }
 
@@ -235,9 +248,13 @@ fn a_share_goes_live_only_after_this_side_confirms_and_stop_frees_everything() {
     assert!(!stun.is_empty(), "the default STUN list");
 
     script.lock().unwrap().invite = Some(InviteState::Waiting);
-    let (changed, next) = shares.drive(&mut slots);
+    let (changed, next) = shares.drive(&mut slots, T0);
     assert!(changed);
-    assert_eq!(next, Some(PAIRING_POLL));
+    assert_eq!(
+        next,
+        Some(WAITING_POLL),
+        "a waiting invite is looked at once a second"
+    );
     assert_eq!(state(&shares), ShareState::WaitingForAnswer);
     let (code, expires) = shares.code(share).unwrap();
     assert!(code.starts_with("rbs-guest:1:"));
@@ -262,7 +279,7 @@ fn a_share_goes_live_only_after_this_side_confirms_and_stop_frees_everything() {
         s.session = Some(PeerState::Connected { confirmed: false });
         s.events.push(PeerEvent::Connected { phrase: phrase() });
     }
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     let status = &shares.status()[0];
     assert_eq!(status.state, ShareState::CheckPhrase);
     assert_eq!(
@@ -272,21 +289,25 @@ fn a_share_goes_live_only_after_this_side_confirms_and_stop_frees_everything() {
     assert!(slots.started.is_empty(), "no output before confirmation");
 
     shares.confirm(share).unwrap();
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     assert_eq!(state(&shares), ShareState::Live);
     assert_eq!(
         slots.started,
         [(format!("rbs-guest://{}", id()), 1)],
         "started on its reservation"
     );
-    assert_eq!(shares.drive(&mut slots).1, Some(LIVE_POLL));
+    assert_eq!(shares.drive(&mut slots, T0).1, Some(LIVE_POLL));
 
     shares.stop(&mut slots, share).unwrap();
     assert_eq!(state(&shares), ShareState::Closed);
     assert_eq!(slots.stopped, [101]);
     assert_eq!(slots.free, 4, "every slot is back");
     assert_eq!(script.lock().unwrap().closed, 1);
-    assert_eq!(shares.drive(&mut slots).1, None, "nothing runs, no timer");
+    assert_eq!(
+        shares.drive(&mut slots, T0).1,
+        None,
+        "nothing runs, no timer"
+    );
 }
 
 #[test]
@@ -301,10 +322,10 @@ fn a_program_with_a_guest_is_refused_and_a_live_share_stops_when_one_is_drawn() 
     slots.guest_drawn = false;
     let share = connect(&mut shares, &script, &mut slots);
     shares.confirm(share).unwrap();
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     assert_eq!(state(&shares), ShareState::Live);
     slots.guest_drawn = true;
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     let status = &shares.status()[0];
     assert_eq!(status.state, ShareState::Failed);
     assert_eq!(
@@ -320,7 +341,7 @@ fn failures_end_the_share_and_give_the_slots_back() {
     let (mut shares, script, mut slots) = rig();
     shares.share(&mut slots, &ShareRequest::default()).unwrap();
     script.lock().unwrap().invite = Some(InviteState::Failed(FailureReason::Expired));
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     assert_eq!(
         shares.status()[0].reason.map(ShareReason::id),
         Some("guest_expired")
@@ -332,7 +353,7 @@ fn failures_end_the_share_and_give_the_slots_back() {
     let share = connect(&mut shares, &script, &mut slots);
     slots.fail_start = true;
     shares.confirm(share).unwrap();
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     assert_eq!(state(&shares), ShareState::Failed);
     assert_eq!(slots.free, 4);
 
@@ -340,9 +361,9 @@ fn failures_end_the_share_and_give_the_slots_back() {
     let (mut shares, script, mut slots) = rig();
     let share = connect(&mut shares, &script, &mut slots);
     shares.confirm(share).unwrap();
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     script.lock().unwrap().session = Some(PeerState::Failed(FailureReason::Disconnected));
-    shares.drive(&mut slots);
+    shares.drive(&mut slots, T0);
     assert_eq!(
         shares.status()[0].reason.map(ShareReason::id),
         Some("guest_disconnected")
@@ -390,4 +411,106 @@ fn limits_and_bounds_are_checked_before_anything_opens() {
     let settings = script.lock().unwrap().settings.clone().unwrap();
     assert!(settings.side.stun_servers.is_empty());
     assert!(!settings.side.check_phrase);
+}
+
+#[test]
+fn a_live_output_failing_or_the_peer_closing_ends_the_share() {
+    // The output fails while live.
+    let (mut shares, script, mut slots) = rig();
+    let share = connect(&mut shares, &script, &mut slots);
+    shares.confirm(share).unwrap();
+    shares.drive(&mut slots, T0);
+    slots.failed_output = true;
+    shares.drive(&mut slots, T0);
+    assert_eq!(
+        shares.status()[0].reason.map(ShareReason::id),
+        Some("guest_output_failed")
+    );
+    assert_eq!(slots.free, 4);
+
+    // The peer closes after a failure event: the reason is kept.
+    let (mut shares, script, mut slots) = rig();
+    let share = connect(&mut shares, &script, &mut slots);
+    shares.confirm(share).unwrap();
+    shares.drive(&mut slots, T0);
+    {
+        let mut s = script.lock().unwrap();
+        s.events.push(PeerEvent::Failed(FailureReason::Limits));
+        s.session = Some(PeerState::Closed);
+    }
+    shares.drive(&mut slots, T0);
+    let status = &shares.status()[0];
+    assert_eq!(status.state, ShareState::Closed);
+    assert_eq!(status.reason.map(ShareReason::id), Some("guest_limits"));
+    assert_eq!(slots.free, 4);
+}
+
+#[test]
+fn a_failed_invite_gives_the_slot_back_and_stop_all_ends_every_share() {
+    let (mut shares, script, mut slots) = rig();
+    script.lock().unwrap().fail_invite = true;
+    assert!(matches!(
+        shares.share(&mut slots, &ShareRequest::default()),
+        Err(ShareRefusal::Failed(_))
+    ));
+    assert_eq!(slots.free, 4);
+    assert!(shares.status().is_empty());
+
+    script.lock().unwrap().fail_invite = false;
+    let live = connect(&mut shares, &script, &mut slots);
+    shares.confirm(live).unwrap();
+    shares.drive(&mut slots, T0);
+    shares.share(&mut slots, &ShareRequest::default()).unwrap();
+    assert_eq!(slots.free, 2);
+    shares.stop_all(&mut slots);
+    assert!(
+        shares
+            .status()
+            .iter()
+            .all(|s| s.state == ShareState::Closed)
+    );
+    assert_eq!(slots.free, 4);
+    assert_eq!(shares.drive(&mut slots, T0).1, None);
+}
+
+#[test]
+fn an_unconfirmed_share_gives_its_slots_back_at_the_confirm_limit() {
+    let (mut shares, script, mut slots) = rig();
+    connect(&mut shares, &script, &mut slots);
+    assert_eq!(state(&shares), ShareState::CheckPhrase);
+    let almost = T0 + CONFIRM_LIMIT - std::time::Duration::from_millis(1);
+    shares.drive(&mut slots, almost);
+    assert_eq!(state(&shares), ShareState::CheckPhrase);
+    shares.drive(&mut slots, T0 + CONFIRM_LIMIT);
+    let status = &shares.status()[0];
+    assert_eq!(status.state, ShareState::Failed);
+    assert_eq!(status.reason.map(ShareReason::id), Some("guest_expired"));
+    assert_eq!(slots.free, 4);
+}
+
+#[test]
+fn a_busy_start_is_tried_again_and_fails_after_its_tries() {
+    let (mut shares, script, mut slots) = rig();
+    let share = connect(&mut shares, &script, &mut slots);
+    slots.busy_start = 2;
+    shares.confirm(share).unwrap();
+    shares.drive(&mut slots, T0);
+    assert_eq!(state(&shares), ShareState::CheckPhrase);
+    assert_eq!(slots.reserved.len(), 1, "the slot stays held");
+    shares.drive(&mut slots, T0);
+    shares.drive(&mut slots, T0);
+    assert_eq!(state(&shares), ShareState::Live);
+
+    let (mut shares, script, mut slots) = rig();
+    let share = connect(&mut shares, &script, &mut slots);
+    slots.busy_start = u32::MAX;
+    shares.confirm(share).unwrap();
+    for _ in 0..=START_TRIES {
+        shares.drive(&mut slots, T0);
+    }
+    assert_eq!(
+        shares.status()[0].reason.map(ShareReason::id),
+        Some("guest_output_failed")
+    );
+    assert_eq!(slots.free, 4);
 }

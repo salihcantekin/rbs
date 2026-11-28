@@ -599,6 +599,8 @@ mod tests {
             ("live.example.com/app", "starts with rtmp://"),
             ("rtmpt://live.example.com/app", "rtmpt:// is not supported"),
             ("https://x/app", "https:// is not supported"),
+            // A guest share's output is started by the share only (ADR-0139).
+            ("rbs-guest://0707/app", "rbs-guest:// is not supported"),
             ("rtmp://live.example.com", "no application name"),
             ("rtmp://live.example.com/", "no application name"),
             ("rtmp:///app", "no server name"),

@@ -1,4 +1,5 @@
-//! Guest shares (ADR-0139 decisions 4, 6, 9, 10, 13 and 14; spec `guest-share.md`):
+//! Guest shares (ADR-0139 decisions 4, 6, 9, 10, 13 and 14; specs `control-api.md`
+//! "Protocol 1.116", `recording.md` "Outputs that own their chain", `peer-port.md`):
 //! this RBS sends a canvas's program to another RBS over a pairing.
 //!
 //! A share runs through *Share* (an invite, a reserved output and chain slot), the
@@ -14,6 +15,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rbs_core::log::Area;
+use rbs_core::time::Timestamp;
 use rbs_peer::{
     CodeError, FailureReason, InviteSettings, InviteState, PeerError, PeerEvent, PeerFactory,
     PeerSession, PeerState, PendingInvite, SessionId, SideSettings,
@@ -26,8 +29,17 @@ pub const MAX_SHARES: usize = 2;
 pub const DEFAULT_STUN_SERVERS: &[&str] = &["stun.l.google.com:19302", "stun.cloudflare.com:3478"];
 /// The URL scheme of a share's output (peer-port.md, "Share transport").
 pub const SHARE_SCHEME: &str = "rbs-guest";
-/// How often a share is looked at while it pairs, and while it is live.
+/// How often a share is looked at while it gathers, connects or checks the phrase.
 pub const PAIRING_POLL: Duration = Duration::from_millis(100);
+/// How often a share is looked at while its invite waits for the answer (up to 30
+/// minutes); taking the answer looks at once.
+pub const WAITING_POLL: Duration = Duration::from_secs(1);
+/// Longest time from the answer to this side's confirmation: the longest answer
+/// lifetime (ADR-0139 decision 4). The slots are held no longer (decision 9).
+pub const CONFIRM_LIMIT: Duration = Duration::from_secs(600);
+/// Looks at a confirmed share whose output cannot start yet (a stopped output's
+/// chain still drains) before it fails: 5 s at [`PAIRING_POLL`].
+pub const START_TRIES: u32 = 50;
 /// How often a live share is looked at.
 pub const LIVE_POLL: Duration = Duration::from_millis(500);
 
@@ -61,7 +73,7 @@ pub const MAX_BPS: u64 = 8_000_000;
 impl ShareVideo {
     /// Why the values are out of bounds, in words.
     pub fn problem(&self) -> Option<String> {
-        let even = self.width % 2 == 0 && self.height % 2 == 0;
+        let even = self.width.is_multiple_of(2) && self.height.is_multiple_of(2);
         if !even || !(320..=1920).contains(&self.width) || !(180..=1080).contains(&self.height) {
             return Some(format!(
                 "a share's picture is even and from 320x180 to 1920x1080, not {}x{}",
@@ -228,14 +240,24 @@ pub trait ShareStudio {
     fn reserve(&mut self) -> Result<u64, ShareRefusal>;
     /// Gives a reservation back.
     fn release(&mut self, reservation: u64);
-    /// Starts the share's output to `url` on `reservation`; an output id.
-    fn start(&mut self, url: &str, reservation: u64, video: ShareVideo) -> Result<u64, String>;
+    /// Starts the share's output to `url` on `reservation`; an output id. The
+    /// reservation stays held on an error.
+    fn start(&mut self, url: &str, reservation: u64, video: ShareVideo) -> Result<u64, StartError>;
     /// Stops an output.
     fn stop(&mut self, output: u64);
     /// The output failed for good.
     fn failed(&self, output: u64) -> bool;
     /// The canvas's program draws a guest source (ADR-0139 decision 13).
     fn draws_guest(&self) -> bool;
+}
+
+/// Why [`ShareStudio::start`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartError {
+    /// A free chain still waits for a stopped output's drain; try again soon.
+    Busy,
+    /// It cannot start.
+    Failed(String),
 }
 
 enum Pairing {
@@ -253,6 +275,11 @@ struct Share {
     phrase: Option<String>,
     reason: Option<ShareReason>,
     video: ShareVideo,
+    /// The answer's deadline for this side's confirmation, set on the first look
+    /// after the answer.
+    confirm_by: Option<Timestamp>,
+    /// Looks at a confirmed share whose output start was busy.
+    start_tries: u32,
 }
 
 impl Share {
@@ -297,7 +324,7 @@ impl Share {
     }
 
     /// One look at the pairing and the output. True when the status changed.
-    fn drive(&mut self, studio: &mut dyn ShareStudio) -> bool {
+    fn drive(&mut self, studio: &mut dyn ShareStudio, now: Timestamp) -> bool {
         let before = self.status();
         if self.state.is_over() {
             return false;
@@ -329,6 +356,12 @@ impl Share {
                 let state = session.state();
                 let session_id = session.session_id();
                 self.follow(studio, state, session_id);
+                if matches!(self.state, ShareState::Connecting | ShareState::CheckPhrase)
+                    && now >= *self.confirm_by.get_or_insert(now + CONFIRM_LIMIT)
+                {
+                    let expired = Some(ShareReason::Pairing(FailureReason::Expired));
+                    self.end(studio, ShareState::Failed, expired);
+                }
             }
             Pairing::None => {}
         }
@@ -360,13 +393,25 @@ impl Share {
                     return;
                 };
                 let url = format!("{SHARE_SCHEME}://{session_id}");
+                self.reservation = Some(reservation);
                 match studio.start(&url, reservation, self.video) {
                     Ok(output) => {
+                        self.reservation = None;
                         self.output = Some(output);
                         self.state = ShareState::Live;
                     }
-                    Err(_) => {
-                        self.reservation = Some(reservation);
+                    Err(StartError::Busy) if self.start_tries < START_TRIES => {
+                        self.start_tries += 1;
+                        self.state = ShareState::CheckPhrase;
+                    }
+                    Err(e) => {
+                        if let StartError::Failed(text) = e {
+                            rbs_core::warn!(
+                                Area::Remote,
+                                "guest share {}: the output did not start: {text}",
+                                self.id
+                            );
+                        }
                         self.end(studio, ShareState::Failed, Some(ShareReason::Output));
                     }
                 }
@@ -459,7 +504,10 @@ impl GuestShares {
             phrase: None,
             reason: None,
             video: request.video,
+            confirm_by: None,
+            start_tries: 0,
         });
+        rbs_core::info!(Area::Remote, "guest share {id}: gathering");
         Ok(id)
     }
 
@@ -531,6 +579,7 @@ impl GuestShares {
         let share = self.find(id)?;
         if !share.state.is_over() {
             share.end(studio, ShareState::Closed, None);
+            log_state(share);
         }
         Ok(())
     }
@@ -540,16 +589,25 @@ impl GuestShares {
         for share in &mut self.shares {
             if !share.state.is_over() {
                 share.end(studio, ShareState::Closed, None);
+                log_state(share);
             }
         }
     }
 
     /// One look at every share. Whether any status changed, and when to look again
     /// (`None`: no share runs, nothing to wait for).
-    pub fn drive(&mut self, studio: &mut dyn ShareStudio) -> (bool, Option<Duration>) {
+    pub fn drive(
+        &mut self,
+        studio: &mut dyn ShareStudio,
+        now: Timestamp,
+    ) -> (bool, Option<Duration>) {
         let mut changed = false;
         for share in &mut self.shares {
-            changed |= share.drive(studio);
+            let before = share.state;
+            changed |= share.drive(studio, now);
+            if share.state != before {
+                log_state(share);
+            }
         }
         let next = self
             .shares
@@ -557,6 +615,7 @@ impl GuestShares {
             .filter(|s| !s.state.is_over())
             .map(|s| match s.state {
                 ShareState::Live => LIVE_POLL,
+                ShareState::WaitingForAnswer => WAITING_POLL,
                 _ => PAIRING_POLL,
             })
             .min();
@@ -566,6 +625,28 @@ impl GuestShares {
     /// The shares, oldest first, ended ones until the next *Share*.
     pub fn status(&self) -> Vec<ShareStatus> {
         self.shares.iter().map(Share::status).collect()
+    }
+}
+
+/// One line per state change: the share's id, state and reason id, never a code.
+fn log_state(share: &Share) {
+    match (share.state, share.reason) {
+        (ShareState::Failed, Some(reason)) => rbs_core::warn!(
+            Area::Remote,
+            "guest share {}: failed ({})",
+            share.id,
+            reason.id()
+        ),
+        (state, Some(reason)) => rbs_core::info!(
+            Area::Remote,
+            "guest share {}: {} ({})",
+            share.id,
+            state.id(),
+            reason.id()
+        ),
+        (state, None) => {
+            rbs_core::info!(Area::Remote, "guest share {}: {}", share.id, state.id());
+        }
     }
 }
 

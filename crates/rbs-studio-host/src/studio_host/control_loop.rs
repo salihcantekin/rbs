@@ -455,7 +455,7 @@ pub(super) fn drive_timed(
     if let (Some(left), changed) = host.drive_guest_shares(now) {
         arm(wait, armed, left);
         if changed {
-            host.guest_changed(notify);
+            host.guest_changed();
         }
     }
     // One wake for the soonest timed-show deadline. An empty cue map adds nothing (ADR-0105, P13).

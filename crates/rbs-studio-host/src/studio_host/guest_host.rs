@@ -19,9 +19,12 @@ use rbs_scene::model::CanvasId;
 use super::Host;
 use super::guest_share::{
     FLOOR_BPS, GuestShares, ShareRefusal, ShareRequest, ShareStatus, ShareStudio, ShareVideo,
+    StartError,
 };
 
-/// The guest source's type id (ADR-0139 decision 12).
+/// The guest source's type id (ADR-0139 decision 12). The return-feed check reads it
+/// only until the guest source (phase 1c) registers a descriptor flag for "carries a
+/// peer's program" (rule 19); `control-api.md` lists this as open in 1.116.
 pub const GUEST_SOURCE_TYPE: &str = "org.rbs.source.guest";
 /// A share's sound: Opus at 128 kbit/s (ADR-0139 decision 9).
 const SHARE_AUDIO_BPS: u64 = 128_000;
@@ -126,19 +129,22 @@ impl ShareStudio for Slots<'_> {
         }
     }
 
-    fn start(&mut self, url: &str, reservation: u64, video: ShareVideo) -> Result<u64, String> {
+    fn start(&mut self, url: &str, reservation: u64, video: ShareVideo) -> Result<u64, StartError> {
         let at = self
             .reservations
             .iter()
             .position(|(n, _)| *n == reservation)
-            .ok_or_else(|| "the share's slot is gone".to_owned())?;
+            .ok_or_else(|| StartError::Failed("the share's slot is gone".to_owned()))?;
         let mut out = share_output(url, video);
         out.canvas = Some(self.canvas);
         out.reserved = Some(self.reservations[at].1);
         let id = self
             .studio
             .start_output(self.adapters, &out)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| match e {
+                RecordError::OutputFinishing => StartError::Busy,
+                other => StartError::Failed(other.to_string()),
+            })?;
         self.reservations.remove(at);
         let n = self.number();
         self.outputs.push((n, id));
@@ -227,11 +233,13 @@ impl Host {
     }
 
     /// Ends every share: the studio restarts or stopped (its outputs and reservations
-    /// go with it).
+    /// go with it). Publishes `guest.changed`.
     pub(super) fn end_guest_shares(&mut self) {
         self.with_shares(|shares, slots| shares.stop_all(slots));
         self.guests.reservations.clear();
         self.guests.outputs.clear();
+        self.guests.due = None;
+        self.guest_changed();
     }
 
     /// Looks at the shares when due; the time left until the next look, `None` while
@@ -243,7 +251,7 @@ impl Host {
         if now < due {
             return (Some(due.saturating_since(now)), false);
         }
-        let (changed, next) = self.with_shares(|shares, slots| shares.drive(slots));
+        let (changed, next) = self.with_shares(|shares, slots| shares.drive(slots, now));
         self.guests.due = next.map(|d| now + d);
         (next, changed)
     }
@@ -251,7 +259,7 @@ impl Host {
 
 impl Host {
     /// Sends `guest.changed` when a share's status changed (never a code).
-    pub(super) fn guest_changed(&mut self, _notify: &dyn Fn(super::Update)) {
+    pub(super) fn guest_changed(&mut self) {
         let now = self.guests.shares.status();
         if now == self.guests.published {
             return;

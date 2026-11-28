@@ -709,7 +709,15 @@ This RBS sends the main canvas's program to another RBS. The pairing is the `rbs
 - **`guest.status`** (`read`): a snapshot of `{shares: [{share, state, phrase?, reason?, expires_at?, width, height, bitrate_kbps}]}`, oldest first; an ended share stays until the next `guest.share`. `state` is `gathering`, `waiting_for_answer`, `connecting`, `check_phrase`, `live`, `failed` or `closed`; `reason` is a `guest_*` id (`peer-port.md`), `guest_return_feed` or `guest_output_failed`; `phrase` is the six check words (not a secret).
 - **Topic `guest.changed`** (state): the `guest.status` data, sent on every change. It never carries a code.
 
-A studio restart (a canvas or profile change) ends every share; new codes are needed. Guest sources (`guest.source.*`, the host side) come with the guest source node in a later minor version.
+- **Without a pairing adapter** (a build without `rbs-peer-str0m`), `guest.share` is `conflict` ("guest sharing is not available in this build").
+- **Scopes.** ADR-0139 decision 14 gives no scope for `guest.share.confirm`; it is `admin` because confirming is what lets media flow to the other computer, the same weight as making the code. `guest.share.stop` only closes things, so a `control` token may stop a share.
+- **Whole status.** `guest.changed` carries the whole `guest.status` data, not a per-share delta (at most two shares, so one small payload), so a client that missed one event is right again after the next.
+- **Deadlines.** A share that has its answer but is not live 10 minutes later (the longest answer lifetime) fails with `guest_expired` and gives its slots back. A confirmed share whose chain slot still drains from a stopped output is tried again for up to 5 s before it fails with `guest_output_failed`.
+- **Logging.** Each state change is one `remote` line with the share id, the state and the reason id; never a code, a phrase or an address.
+
+A studio restart (a canvas or profile change) or a stop of the studio ends every share, and `guest.changed` follows; new codes are needed. Guest sources (`guest.source.*`, the host side) come with the guest source node in a later minor version.
+
+Open in 1.116 (listed in `status.md`): the ADR-0087 estimate does not yet add a planned output for a reserved share (a live share counts as a running output); the share's keyframe interval is the encoder's 2 s default, not decision 8's 1 s; the return-feed check reads the program scene only, not a bound hold scene; the share's Opus audio chain is not reserved (audio chains are rarely all taken, and a start that finds none fails with `guest_output_failed`); and the check finds a guest source by its type id until the guest source registers a flag for it.
 
 ### Protocol 1.115: audio buses (ADR-0097 decisions 12 and 13, ADR-0170 decision 9)
 
