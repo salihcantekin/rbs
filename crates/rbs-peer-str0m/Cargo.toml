@@ -9,8 +9,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+rbs-core = { path = "../rbs-core" }
 rbs-crash = { path = "../rbs-crash" }
+rbs-media-format = { path = "../rbs-media-format" }
 rbs-peer = { path = "../rbs-peer" }
+rbs-transport = { path = "../rbs-transport" }
+rtrb = "0.4"
 # ADR-0139 decision 3: no str0m crypto feature (each pulls aws-lc-sys or OpenSSL, banned
 # by ADR-0046). The provider in `crypto` is built from RustCrypto crates, dimpl's
 # rust-crypto backend and rcgen on ring (ring is ADR-0046's provider). Exact pins.
@@ -31,7 +35,12 @@ time = "0.3"
 miniz_oxide = "0.8"
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 rbs-peer = { path = "../rbs-peer", features = ["conformance"] }
+
+[[bench]]
+name = "send"
+harness = false
 
 [lints]
 workspace = true
