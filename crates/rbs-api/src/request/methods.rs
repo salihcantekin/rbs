@@ -560,6 +560,8 @@ pub const UI_METHODS: &[&str] = &[
     "ui.collection.rename",
     "ui.collection.import",
     "ui.collection.import_obs",
+    "ui.guest.share",
+    "ui.guest.add",
     "ui.collection.export",
     "ui.collection.delete",
     "ui.panel.open",

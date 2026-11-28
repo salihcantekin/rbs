@@ -1,6 +1,6 @@
 [package]
 name = "rbs-app-ui-dialogs"
-description = "The Rust code Slint generates for the RBS desktop app's dialogs window group: SourceSettingsWindow, SyncMeasureWindow, ObsImportWindow, AttributesWindow, ProjectorWindow, InteractWindow (ADR-0138)."
+description = "The Rust code Slint generates for the RBS desktop app's dialogs window group: SourceSettingsWindow, SyncMeasureWindow, ObsImportWindow, AttributesWindow, ProjectorWindow, InteractWindow, GuestWindow (ADR-0138)."
 version.workspace = true
 edition.workspace = true
 # Slint 1.18 needs Rust 1.92 (ADR-0022, decision 6), as for rbs-app.

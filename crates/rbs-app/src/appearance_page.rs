@@ -728,6 +728,13 @@ fn apply_all(ctx: &Ctx, app: &App) {
             look,
         );
     }
+    if let Some(g) = &app.guest {
+        look::apply(
+            &g.window.global::<Theme>(),
+            &g.window.global::<Tokens>(),
+            look,
+        );
+    }
     crate::projector::each_window(|w| {
         look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
     });

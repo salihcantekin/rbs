@@ -255,6 +255,14 @@ format = 4
 # The first-run card (ADR-0113 decision 5): wide enough for the three choices with
 # their one-line descriptions. Not themeable.
 "size.first-run.w" = 480
+# The guest window (ADR-0139 phase 1d): its width, the code box (a share's invite or
+# answer code, two lines of text), a word of the check phrase, a step's
+# number circle in the header and the dot of a status badge. Not themeable.
+"size.guest.w" = 480
+"size.guest.code-h" = 56
+"size.guest.word-h" = 44
+"size.guest.step-dot" = 18
+"size.guest.status-dot" = 8
 # How far from a projector's edge a press resizes it on Windows, where it has no frame
 # (ADR-0125 decision 5).
 "size.projector.resize-edge" = 8

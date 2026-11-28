@@ -9301,6 +9301,9 @@ pub(crate) mod tests {
             run("ui.collection.import_obs", &s),
             Some(Run::OpenObsImport)
         );
+        // The guest window opens from the Output menu (ADR-0139).
+        assert_eq!(run("ui.guest.share", &s), Some(Run::OpenGuest(true)));
+        assert_eq!(run("ui.guest.add", &s), Some(Run::OpenGuest(false)));
         // A fresh library holds one output profile: the only one cannot be deleted.
         // The only scene collection can be deleted once the studio runs (a Default
         // replacement takes its place); without a studio the switch is refused.

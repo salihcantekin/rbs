@@ -27,6 +27,7 @@ mod entry;
 mod file_calls;
 mod filter_calls;
 mod group_run;
+mod guest_page;
 mod icons;
 mod interact;
 mod library_transfer;
@@ -255,6 +256,9 @@ struct App {
     open_app_menu: bool,
     /// `ui.collection.import_obs` ran; the next sync opens the Import from OBS window.
     open_obs_import: bool,
+    /// `ui.guest.share` (`true`) or `ui.guest.add` ran; the next sync opens the guest
+    /// window (ADR-0139).
+    open_guest: Option<bool>,
     /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
     open_vertical: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
@@ -315,6 +319,8 @@ struct App {
     sync_measure: Option<SyncMeasureWindow>,
     /// The Import from OBS window while open (ADR-0131 step 3).
     obs_import: Option<obs_import_page::ObsImport>,
+    /// The guest window (Share and Add guest), while open.
+    guest: Option<guest_page::GuestPage>,
     attributes: Option<AttributesWindow>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
@@ -961,6 +967,7 @@ impl App {
             Run::OpenAppMenu => self.open_app_menu = true,
             Run::Window(command) => title_bar::run(&self.main, command),
             Run::OpenObsImport => self.open_obs_import = true,
+            Run::OpenGuest(sharing) => self.open_guest = Some(sharing),
             Run::Projector(canvas, true) => self.open_projector(canvas),
             Run::Projector(canvas, false) => self.close_projector(canvas),
             Run::ProjectorSize(canvas, size, display) => {
@@ -2481,6 +2488,9 @@ impl Ctx {
         if let Some(i) = &app.obs_import {
             ok &= exclude_window_from_capture(i.window.window(), exclude);
         }
+        if let Some(g) = &app.guest {
+            ok &= exclude_window_from_capture(g.window.window(), exclude);
+        }
         if let Some(w) = &app.attributes {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
@@ -2503,6 +2513,7 @@ impl Ctx {
             + usize::from(app.source_settings.is_some())
             + usize::from(app.sync_measure.is_some())
             + usize::from(app.obs_import.is_some())
+            + usize::from(app.guest.is_some())
             + usize::from(app.attributes.is_some())
             + app.floats.len()
             + interact::count()
@@ -2627,6 +2638,10 @@ impl Ctx {
             self.show_all(&mut app);
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
+        }
+        if let Some(sharing) = app.open_guest.take() {
+            self.show_all(&mut app);
+            guest_page::open(self, &mut app, sharing);
         }
         if std::mem::take(&mut app.open_obs_import) {
             self.show_all(&mut app);
@@ -5596,6 +5611,9 @@ fn apply_os_scheme(app: &mut App) {
     if let Some(i) = &app.obs_import {
         look::set_os_scheme(&i.window.global::<Theme>());
     }
+    if let Some(g) = &app.guest {
+        look::set_os_scheme(&g.window.global::<Theme>());
+    }
     if let Some(w) = &app.attributes {
         look::set_os_scheme(&w.global::<Theme>());
     }
@@ -5785,6 +5803,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_attributes: None,
             open_app_menu: false,
             open_obs_import: false,
+            open_guest: None,
             open_vertical: false,
             ask_name: None,
             name_for: None,
@@ -5813,6 +5832,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             source_settings_fit: SourceSettingsFit::default(),
             sync_measure: None,
             obs_import: None,
+            guest: None,
             attributes: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
