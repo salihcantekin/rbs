@@ -117,6 +117,7 @@ export namespace EventsSubscribeParams {
 		| "stream.canvas_state"
 		| "monitor.changed"
 		| "bus.changed"
+		| "guest.changed"
 		| "protection.changed"
 		| "calibration.state"
 		| "sync.measure.changed"
