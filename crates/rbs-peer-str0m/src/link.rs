@@ -455,7 +455,6 @@ impl OwnerSide {
     /// Moves queued packets to the engine and received frames to the guest source,
     /// and publishes feedback and state.
     pub(crate) fn pump(&mut self, engine: &mut crate::engine::Engine, now: std::time::Instant) {
-        use crate::engine::Phase;
         while let Some(out) = self.send_rx.as_mut().and_then(|rx| rx.pop().ok()) {
             let data = match (out.track, out.packet.bitstream()) {
                 (Track::Video, BitstreamFormat::LengthPrefixed { length_size }) => {
