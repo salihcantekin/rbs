@@ -83,6 +83,10 @@ mod buses;
 mod cues;
 pub use cues::HeldShowCues;
 mod estimate_plan;
+mod output_size;
+pub(crate) use output_size::resolve_output_size;
+mod own_chain;
+pub use own_chain::{OwnChain, SlotReservation};
 mod group_scroll;
 mod group_support;
 mod health;
@@ -308,33 +312,13 @@ pub struct OutputSettings {
     /// track, never shared, and a destination that carries fewer audio streams
     /// refuses the start with [`RecordError::TracksUnsupported`].
     pub more_tracks: Vec<String>,
-}
-
-/// Smallest side of an explicit output size (ADR-0102 decision 7).
-const OUTPUT_SIZE_MIN: u32 = 2;
-/// Largest side of an explicit output size. A canvas may be taller (8192); an
-/// absent size keeps that canvas.
-const OUTPUT_SIZE_MAX: u32 = 7680;
-
-/// The picture an output encodes. `None` is `canvas`. An explicit size must be even
-/// and in 2..=7680 on both sides; otherwise [`RecordError::OutputSize`] and nothing
-/// is chosen. The aspect is not re-fitted: a later settings UI stores same-aspect
-/// sizes, and a different aspect is letterboxed by the scaled download.
-pub(crate) fn resolve_output_size(
-    size: Option<(u32, u32)>,
-    canvas: (u32, u32),
-) -> Result<(u32, u32), RecordError> {
-    let Some((width, height)) = size else {
-        return Ok(canvas);
-    };
-    let even = width.is_multiple_of(2) && height.is_multiple_of(2);
-    let in_range = (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&width)
-        && (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&height);
-    if even && in_range {
-        Ok((width, height))
-    } else {
-        Err(RecordError::OutputSize { width, height })
-    }
+    /// The output owns its video encoder chain (ADR-0139 decisions 8 and 9, a guest
+    /// share): it shares no running encoder and none shares its, the encoder is tuned
+    /// for low latency, and the transport's keyframe requests and bitrate hints reach it.
+    pub own_chain: Option<OwnChain>,
+    /// The slots [`Studio::reserve_slot`] kept for this output; taken on success.
+    /// Only [`Studio::start_output`] reads it.
+    pub reserved: Option<SlotReservation>,
 }
 
 impl OutputSettings {
@@ -367,6 +351,8 @@ impl OutputSettings {
             holdable: false,
             audio_bus: None,
             more_tracks: Vec::new(),
+            own_chain: None,
+            reserved: None,
         }
     }
 
@@ -699,6 +685,8 @@ pub(crate) struct Prepared {
     /// This output's container wants the filtered length-prefixed sample (fMP4, MOV,
     /// Matroska). A second such output of one encoder turns packet sharing on.
     filtered_share: bool,
+    /// The output owns its chain: no later output shares it.
+    own: bool,
 }
 
 impl Prepared {
@@ -725,6 +713,7 @@ impl Prepared {
             return Err(RecordError::EmptyOutput);
         }
         let mut streams = Vec::new();
+        let mut feedback = None;
         let pause = out.pausable.then(|| {
             out.shared_pause.as_ref().map_or_else(
                 || Arc::new(PauseWindow::default()),
@@ -751,23 +740,17 @@ impl Prepared {
                     video.color,
                     video.open_shadows,
                 );
-                let video_config = video_encoder_config(video, export.frame_format(), fps);
-                let shared_video = running.video.iter().position(|c| {
-                    c.as_ref().is_some_and(|c| {
-                        c.canvas == canvas
-                            && c.settings == *video
-                            && c.size == (width, height)
-                            // An export asked to end takes no later canvas (ADR-0045).
-                            && c.end.requested().is_none()
-                            // Nor is a chain that was ever paused (ADR-0124).
-                            && never_paused(c.pause.as_ref())
-                            && select::is_video_candidate(
-                                &adapters.video_encoders,
-                                &video_config,
-                                &c.chosen.adapter,
-                            )
-                    })
-                });
+                let mut video_config = video_encoder_config(video, export.frame_format(), fps);
+                if out.own_chain.is_some() {
+                    video_config = own_chain::tuned(video_config);
+                }
+                let shared_video = shared_video(
+                    running,
+                    adapters,
+                    out,
+                    (canvas, width, height),
+                    &video_config,
+                );
                 match shared_video.and_then(|i| Some((i, running.video[i].as_ref()?))) {
                     Some((i, chain)) => {
                         streams.push(chain.stream.clone());
@@ -775,15 +758,7 @@ impl Prepared {
                     }
                     None => {
                         // Limits before an encoder session opens (ADR-0127 decision 2).
-                        let on_canvas = running
-                            .video
-                            .iter()
-                            .flatten()
-                            .filter(|c| c.canvas == canvas)
-                            .count();
-                        if on_canvas >= MAX_CHAINS_PER_CANVAS
-                            || running.video.iter().all(Option::is_some)
-                        {
+                        if running.no_chain_slot(canvas) {
                             return Err(RecordError::NoEncoderSlot);
                         }
                         // Native input first, when the render device has an exporter and
@@ -810,7 +785,13 @@ impl Prepared {
                         // sharing it later resumes at one (ADR-0124 decisions 7 and 8).
                         let keyframe_capable =
                             select::declares_keyframe(&adapters.video_encoders, &chosen.adapter);
-                        let (encoder, keyframes) = encoder.with_keyframe_requests();
+                        let (mut encoder, keyframes) = encoder.with_keyframe_requests();
+                        if let Some(own) = &out.own_chain {
+                            let (e, f) = own_chain::feedback(
+                                own, encoder, &keyframes, video, adapters, &chosen,
+                            );
+                            (encoder, feedback) = (e, Some(f));
+                        }
                         let (export, chain_pause) = match &pause {
                             Some(_) => {
                                 let window = Arc::new(PauseWindow::default());
@@ -878,6 +859,9 @@ impl Prepared {
         let (transport_factory, transport) =
             select::transport(&adapters.transports, &out.url, out.input)?;
         let mut output = OutputNode::new(streams, transport_factory, out.transport_config());
+        if let Some(feedback) = feedback {
+            output = output.with_encoder_feedback(feedback);
+        }
         let muxer = match muxer {
             Some(((factory, chosen), container)) => {
                 output = output.with_muxer(factory, container, None);
@@ -907,8 +891,39 @@ impl Prepared {
                 out.container(),
                 Some(ContainerId::Mp4Fragmented | ContainerId::Mov | ContainerId::Matroska)
             ),
+            own: out.own_chain.is_some(),
         })
     }
+}
+
+/// The running chain an output of `video` at `size` on `canvas` may share (ADR-0047,
+/// ADR-0102): never a chain one output owns, nor for an output that owns its own.
+fn shared_video(
+    running: &Chains,
+    adapters: &RecordAdapters,
+    out: &OutputSettings,
+    (canvas, width, height): (CanvasId, u32, u32),
+    video_config: &VideoEncoderConfig,
+) -> Option<usize> {
+    let video = out.video.as_ref()?;
+    running.video.iter().position(|c| {
+        c.as_ref().is_some_and(|c| {
+            c.canvas == canvas
+                && !c.exclusive
+                && out.own_chain.is_none()
+                && c.settings == *video
+                && c.size == (width, height)
+                // An export asked to end takes no later canvas (ADR-0045).
+                && c.end.requested().is_none()
+                // Nor is a chain that was ever paused (ADR-0124).
+                && never_paused(c.pause.as_ref())
+                && select::is_video_candidate(
+                    &adapters.video_encoders,
+                    video_config,
+                    &c.chosen.adapter,
+                )
+        })
+    })
 }
 
 /// True when a running chain was never paused, so a later output may share it
@@ -954,6 +969,8 @@ struct VideoChain {
     /// The lease owners of a native export, dropped only after the chain's nodes are
     /// taken back (ADR-0147 decision 8); `None` for the readback.
     owners: Option<Arc<LeaseOwners>>,
+    /// Owned by one output (ADR-0139 decision 9): never shared.
+    exclusive: bool,
 }
 
 /// The encoder chains running, by slot (the slot picks their partitions).
@@ -961,6 +978,8 @@ struct VideoChain {
 pub(crate) struct Chains {
     video: [Option<VideoChain>; MAX_CHAINS],
     audio: [Option<AudioChain>; MAX_CHAINS],
+    /// Slots kept for outputs that start later (ADR-0139 decision 9).
+    reserved: own_chain::Reserved,
 }
 
 /// Encoder counters when an output joined a running chain; its progress counts from
@@ -4049,8 +4068,18 @@ impl Studio {
         adapters: &RecordAdapters,
         out: &OutputSettings,
     ) -> Result<OutputId, RecordError> {
-        let prepared = self.prepare(adapters, out)?;
-        self.attach(prepared, &adapters.sources, Strictness::Lenient)
+        let canvas = out.canvas.unwrap_or(self.settings.canvas);
+        let reserved = match out.reserved {
+            Some(id) => Some(self.take_reservation(id, canvas)?),
+            None => None,
+        };
+        let started = self
+            .prepare(adapters, out)
+            .and_then(|prepared| self.attach(prepared, &adapters.sources, Strictness::Lenient));
+        if let (Err(_), Some(entry)) = (&started, reserved) {
+            self.restore_reservation(entry);
+        }
+        started
     }
 
     /// The native memory kind and device for a new chain: none once a native chain
@@ -4090,15 +4119,10 @@ impl Studio {
         adapters: &RecordAdapters,
         out: &OutputSettings,
     ) -> Result<Prepared, RecordError> {
-        if self.outputs.len() >= MAX_OUTPUTS {
-            return Err(RecordError::TooManyOutputs);
-        }
+        let canvas = out.canvas.unwrap_or(self.settings.canvas);
+        self.output_slot(canvas)?;
         if out.audio.is_some() && self.mixer.is_none() {
             return Err(RecordError::NotBound("mixer"));
-        }
-        let canvas = out.canvas.unwrap_or(self.settings.canvas);
-        if self.outputs.iter().filter(|o| o.canvas == canvas).count() >= MAX_OUTPUTS_PER_CANVAS {
-            return Err(RecordError::TooManyOutputs);
         }
         let size = self.canvas_size(canvas)?;
         let tracks = match out.audio {
@@ -4318,8 +4342,7 @@ impl Studio {
                     partition: part,
                     gpu: false,
                 };
-                nodes.push(e);
-                nodes.push(v);
+                nodes.extend([e, v]);
                 new_video = Some((e, v));
                 Some(i)
             }
@@ -4404,6 +4427,7 @@ impl Studio {
                 share_packets,
                 filtered_users: 0,
                 owners,
+                exclusive: p.own,
             });
         }
         let mut audio_chain = None;
@@ -5455,43 +5479,6 @@ fn text_adjusted(collection: &SceneCollection) -> Vec<SourceSettingsAdjusted> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_absent_size_keeps_the_canvas_and_an_illegal_size_is_refused() {
-        assert_eq!(resolve_output_size(None, (64, 36)).unwrap(), (64, 36));
-        // A vertical canvas may be 8192. "Same as canvas" is allowed; an explicit
-        // side above 7680 is not.
-        assert_eq!(
-            resolve_output_size(None, (1080, 8192)).unwrap(),
-            (1080, 8192)
-        );
-        assert!(matches!(
-            resolve_output_size(Some((1080, 8192)), (1080, 8192)),
-            Err(RecordError::OutputSize {
-                width: 1080,
-                height: 8192
-            })
-        ));
-        assert_eq!(
-            resolve_output_size(Some((7680, 2)), (64, 36)).unwrap(),
-            (7680, 2)
-        );
-        assert_eq!(resolve_output_size(Some((2, 2)), (64, 36)).unwrap(), (2, 2));
-        // A different aspect is not re-fitted here. The download letterboxes it.
-        assert_eq!(
-            resolve_output_size(Some((64, 64)), (64, 36)).unwrap(),
-            (64, 64)
-        );
-        for (width, height) in [(33, 18), (1, 2), (0, 36), (7690, 2), (4, 7682), (3, 3)] {
-            assert!(
-                matches!(
-                    resolve_output_size(Some((width, height)), (64, 36)),
-                    Err(RecordError::OutputSize { width: w, height: h }) if w == width && h == height
-                ),
-                "{width}x{height}"
-            );
-        }
-    }
 
     #[test]
     fn a_missing_runner_is_not_called_a_missing_engine() {

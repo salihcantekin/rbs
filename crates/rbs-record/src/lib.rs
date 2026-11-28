@@ -60,11 +60,11 @@ pub use studio::{
     HoldState, IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart,
     IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_CHAINS, MAX_CHAINS_PER_CANVAS,
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, ManualStep, MonitorState, OutputId,
-    OutputSettings, PauseRefused, PauseState, PictureId, PlannedOutput, READY_WAIT, ReplaySettings,
-    SharedPause, SourceSettingsAdjusted, StartPlanRequest, Studio, StudioSettings, TEXT_WAIT_TICKS,
-    TextDue, TextFonts, TextTimer, TimerAction, TimerRefused, TransitionEvent, TransitionOnce,
-    TransitionPhase, TransitionState, Updated, VirtualCameraSettings, VirtualCameraState,
-    compensate_filter_latency,
+    OutputSettings, OwnChain, PauseRefused, PauseState, PictureId, PlannedOutput, READY_WAIT,
+    ReplaySettings, SharedPause, SlotReservation, SourceSettingsAdjusted, StartPlanRequest, Studio,
+    StudioSettings, TEXT_WAIT_TICKS, TextDue, TextFonts, TextTimer, TimerAction, TimerRefused,
+    TransitionEvent, TransitionOnce, TransitionPhase, TransitionState, Updated,
+    VirtualCameraSettings, VirtualCameraState, compensate_filter_latency,
 };
 pub use studio::{
     GroupFailure, GroupFailureReason, GroupIds, GroupOccurrence, GroupRunKey, GroupRunState,
