@@ -103,11 +103,13 @@ mod tests {
         assert_eq!(t.check(0, Some(500 * MS)), Timed::At(500 * MS));
         // A far-future capture time against its RTP time.
         assert_eq!(t.check(960, Some(90_000 * MS)), Timed::Outlier);
-        // RTP time going back.
+        // The same RTP time with an earlier capture time: not forward.
         assert_eq!(t.check(0, Some(499 * MS)), Timed::Outlier);
         // The next good frame still passes against the last good one.
         assert_eq!(t.check(1_920, Some(540 * MS)), Timed::At(540 * MS));
-        assert_eq!(t.outliers(), 3);
+        // RTP time going back.
+        assert_eq!(t.check(960, Some(520 * MS)), Timed::Outlier);
+        assert_eq!(t.outliers(), 4);
         assert!(!t.refused());
     }
 
@@ -115,9 +117,11 @@ mod tests {
     fn many_outliers_in_a_row_refuse_the_peer() {
         let mut t = TrackTiming::new(90_000);
         t.check(0, Some(MS));
-        for i in 1..=u64::from(MAX_OUTLIERS_IN_ROW) {
+        for i in 1..u64::from(MAX_OUTLIERS_IN_ROW) {
             t.check(i * 3_000, Some(u64::MAX / 2));
         }
+        assert!(!t.refused(), "one fewer is not refused");
+        t.check(1_000_000, Some(u64::MAX / 2));
         assert!(t.refused());
     }
 }

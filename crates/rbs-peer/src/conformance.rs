@@ -184,6 +184,20 @@ pub fn check_pairing(h: &Harness<'_>) {
         "answerer events"
     );
 
+    // The receiving half (guest-source.md): once, and only on the answering side.
+    assert!(
+        offerer.take_receiver().is_none(),
+        "an offering session gives no receiver"
+    );
+    if let Some(receiver) = answerer.take_receiver() {
+        assert!(
+            answerer.take_receiver().is_none(),
+            "the receiver is given once"
+        );
+        (h.wait)("receiver confirmed", &mut || receiver.confirmed());
+        assert!(!receiver.ended());
+    }
+
     offerer.close();
     assert_eq!(offerer.state(), PeerState::Closed, "closed by this side");
     assert_eq!(

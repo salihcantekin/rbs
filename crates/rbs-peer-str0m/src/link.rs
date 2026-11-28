@@ -77,6 +77,11 @@ pub struct WebRtcMedia {
     pub(crate) keyframe_requests: AtomicU64,
     pub(crate) estimate_bps: AtomicU64,
     pub(crate) receive_overflow: AtomicU64,
+    /// Bytes of the frames the guest's ring dropped.
+    receive_overflow_bytes: AtomicU64,
+    /// Frames (and their bytes) the engine's own queue dropped, as last published.
+    engine_overflow: AtomicU64,
+    engine_overflow_bytes: AtomicU64,
     /// Set once, before the owner thread starts: read without a lock.
     waker: OnceLock<(UdpSocket, SocketAddr)>,
 }
@@ -102,6 +107,9 @@ impl WebRtcMedia {
             keyframe_requests: AtomicU64::new(0),
             estimate_bps: AtomicU64::new(0),
             receive_overflow: AtomicU64::new(0),
+            receive_overflow_bytes: AtomicU64::new(0),
+            engine_overflow: AtomicU64::new(0),
+            engine_overflow_bytes: AtomicU64::new(0),
             waker: OnceLock::new(),
         })
     }
@@ -222,7 +230,7 @@ impl GuestReceiver {
         self.media.wake();
     }
 
-    /// True while both gates are open on this side.
+    /// True while this side is connected and confirmed.
     pub fn confirmed(&self) -> bool {
         self.media.state() == LinkState::Live
     }
@@ -235,6 +243,13 @@ impl GuestReceiver {
     /// Frames dropped because they were not taken in time.
     pub fn overflow(&self) -> u64 {
         self.media.receive_overflow.load(Ordering::Relaxed)
+            + self.media.engine_overflow.load(Ordering::Relaxed)
+    }
+
+    /// Bytes of the frames [`Self::overflow`] counts.
+    pub fn overflow_bytes(&self) -> u64 {
+        self.media.receive_overflow_bytes.load(Ordering::Relaxed)
+            + self.media.engine_overflow_bytes.load(Ordering::Relaxed)
     }
 }
 
@@ -480,10 +495,14 @@ impl OwnerSide {
         if self.media.take_keyframe_wanted() && !engine.request_keyframe(now) {
             self.media.keyframe_wanted.store(true, Ordering::Release);
         }
+        // The state first, so the guest source's own gate does not drop the first
+        // frames of the turn that confirmed this side.
+        self.publish_state(engine);
         while let Some(mut frame) = engine.poll_received() {
             if self.media.receive_gap.swap(false, Ordering::AcqRel) {
                 frame.contiguous = false;
             }
+            let len = frame.data.len() as u64;
             let pushed = self
                 .receive_tx
                 .as_mut()
@@ -492,6 +511,9 @@ impl OwnerSide {
                 // The newest frame is lost (the ring cannot drop its oldest): mark the
                 // gap and ask for a keyframe, so the decoder does not run on across it.
                 self.media.receive_overflow.fetch_add(1, Ordering::Relaxed);
+                self.media
+                    .receive_overflow_bytes
+                    .fetch_add(len, Ordering::Relaxed);
                 self.media.receive_gap.store(true, Ordering::Release);
                 if !engine.request_keyframe(now) {
                     self.media.keyframe_wanted.store(true, Ordering::Release);
@@ -499,6 +521,12 @@ impl OwnerSide {
             }
         }
         let counters = engine.media_counters();
+        self.media
+            .engine_overflow
+            .store(counters.overflow, Ordering::Relaxed);
+        self.media
+            .engine_overflow_bytes
+            .store(counters.overflow_bytes, Ordering::Relaxed);
         let new_requests = counters.keyframe_requests - self.last_requests;
         if new_requests > 0 {
             self.last_requests = counters.keyframe_requests;
@@ -509,6 +537,11 @@ impl OwnerSide {
         if let Some(bps) = engine.bitrate_estimate() {
             self.media.estimate_bps.store(bps, Ordering::Relaxed);
         }
+        self.publish_state(engine);
+    }
+
+    fn publish_state(&self, engine: &crate::engine::Engine) {
+        use crate::engine::Phase;
         self.media.set_state(match engine.phase() {
             Phase::Connected { confirmed: true } => LinkState::Live,
             Phase::Failed(_) | Phase::Closed => LinkState::Ended,

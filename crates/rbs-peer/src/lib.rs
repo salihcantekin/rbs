@@ -28,7 +28,7 @@ pub use code::{
 };
 pub use error::{CodeError, FailureReason, PeerError, PhraseError, SettingsError};
 pub use phrase::{CheckPhrase, PHRASE_DOMAIN, phrase_input};
-pub use receive::{FrameTrack, PeerReceiver, ReceivedFrame};
+pub use receive::{Dropped, FrameTrack, PeerReceiver, ReceivedFrame};
 pub use session::{
     InviteState, MediaHandle, PeerEvent, PeerFactory, PeerRole, PeerSession, PeerState,
     PendingInvite,

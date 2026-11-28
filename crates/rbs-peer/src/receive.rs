@@ -58,17 +58,36 @@ impl ReceivedFrame {
 /// [`PeerSession::take_receiver`](crate::PeerSession::take_receiver). Frames come only
 /// after this side is confirmed. The receiver never ends the pairing: the guest source
 /// reports a reason (`guest_limits`) to the host, which closes the session.
+///
+/// Later methods are added as provided methods, so adapters keep compiling.
 pub trait PeerReceiver: Send {
     /// The next frame, if one arrived. Never blocks.
     fn poll(&mut self) -> Option<ReceivedFrame>;
     /// Asks the sharer for a keyframe (a PLI).
     fn request_keyframe(&self);
-    /// True while both pairing gates are open on this side (the guest source drops
-    /// every frame otherwise, a second gate behind the adapter's).
+    /// True while this side is connected and confirmed (the guest source drops every
+    /// frame otherwise, a second gate behind the adapter's).
     fn confirmed(&self) -> bool;
     /// True once the session failed or closed.
     fn ended(&self) -> bool;
-    /// Frames dropped because they were not taken in time (counted toward the rate
-    /// limit by the guest source).
-    fn overflow(&self) -> u64;
+    /// Frames the adapter received and dropped before `poll`, and their bytes, since
+    /// the session started (the guest source counts the bytes toward its rate limit).
+    fn dropped(&self) -> Dropped;
+}
+
+/// Frames an adapter received and dropped before the guest source took them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Dropped {
+    /// Frames.
+    pub frames: u64,
+    /// Their bytes.
+    pub bytes: u64,
+}
+
+impl Dropped {
+    /// Counts of frames and bytes.
+    pub fn new(frames: u64, bytes: u64) -> Self {
+        Self { frames, bytes }
+    }
 }

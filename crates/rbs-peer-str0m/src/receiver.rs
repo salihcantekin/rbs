@@ -33,7 +33,10 @@ impl rbs_peer::PeerReceiver for GuestReceiver {
         GuestReceiver::ended(self)
     }
 
-    fn overflow(&self) -> u64 {
-        GuestReceiver::overflow(self)
+    fn dropped(&self) -> rbs_peer::Dropped {
+        rbs_peer::Dropped::new(
+            GuestReceiver::overflow(self),
+            GuestReceiver::overflow_bytes(self),
+        )
     }
 }

@@ -19,8 +19,8 @@ pub const TARGET_RANGE: (Duration, Duration) =
     (Duration::from_millis(40), Duration::from_millis(1000));
 /// Most sender time the buffer holds.
 pub const MAX_HOLD: Duration = Duration::from_secs(2);
-/// Most frames the buffer holds (2 s of 120 fps video, or of 2.5 ms Opus packets is
-/// more; those are bounded by time first).
+/// Most frames the buffer holds: 2 s of 120 fps video, or 1.5 s of 2.5 ms Opus
+/// packets (shorter packets are bounded by count first).
 pub const MAX_FRAMES: usize = 600;
 /// Most frame bytes the buffer holds: 2 s at the 50 Mbit/s rate limit.
 pub const MAX_BYTES: usize = 12_500_000;
@@ -128,7 +128,11 @@ impl<T> JitterBuffer<T> {
         now: Timestamp,
     ) -> Pushed {
         let release = mapped + self.target;
-        let held_after = self.video && self.queue.back().is_some_and(|q| capture_ns <= q.capture_ns);
+        let held_after = self.video
+            && self
+                .queue
+                .back()
+                .is_some_and(|q| capture_ns <= q.capture_ns);
         let behind = held_after || self.released_through.is_some_and(|r| capture_ns <= r);
         if behind || now > release + self.target {
             self.counts.late += 1;
@@ -211,6 +215,12 @@ impl<T> JitterBuffer<T> {
         self.last_request = None;
     }
 
+    /// A frame of this track was lost before it reached the buffer (an outlier the
+    /// time checks dropped): a video track waits for the next keyframe.
+    pub fn mark_lost(&mut self) {
+        self.lose_video();
+    }
+
     fn lose_video(&mut self) {
         if self.video {
             self.need_keyframe = true;
@@ -287,7 +297,11 @@ mod tests {
         assert_eq!(push(&mut b, 0, false, true, 301), Pushed::TooLate);
         assert_eq!(push(&mut b, 100, false, true, 110), Pushed::Held);
         assert_eq!(drain(&mut b, 250), [100]);
-        assert_eq!(push(&mut b, 90, false, true, 250), Pushed::TooLate, "behind");
+        assert_eq!(
+            push(&mut b, 90, false, true, 250),
+            Pushed::TooLate,
+            "behind"
+        );
         assert_eq!(b.counts().late, 2);
     }
 
@@ -302,7 +316,10 @@ mod tests {
         assert_eq!(push(&mut b, 66, false, true, 66), Pushed::Held);
         assert!(!b.keyframe_request(t(3000)), "nothing to ask for");
         // A gap: drop until the next keyframe.
-        assert_eq!(push(&mut b, 133, false, false, 133), Pushed::WaitingForKeyframe);
+        assert_eq!(
+            push(&mut b, 133, false, false, 133),
+            Pushed::WaitingForKeyframe
+        );
         assert!(b.keyframe_request(t(3000)));
         assert_eq!(push(&mut b, 166, true, true, 166), Pushed::Held);
         assert_eq!(drain(&mut b, 1000), [33, 66, 166]);
@@ -314,13 +331,23 @@ mod tests {
         let mut v = JitterBuffer::new(DEFAULT_TARGET, true);
         push(&mut v, 0, true, true, 0);
         push(&mut v, 33, false, true, 33);
-        assert_eq!(push(&mut v, 20, false, true, 40), Pushed::TooLate, "not forward");
-        assert_eq!(push(&mut v, 66, false, true, 66), Pushed::WaitingForKeyframe);
+        assert_eq!(
+            push(&mut v, 20, false, true, 40),
+            Pushed::TooLate,
+            "not forward"
+        );
+        assert_eq!(
+            push(&mut v, 66, false, true, 66),
+            Pushed::WaitingForKeyframe
+        );
         // A frame too late breaks the chain too.
         let mut w = JitterBuffer::new(DEFAULT_TARGET, true);
         push(&mut w, 0, true, true, 0);
         assert_eq!(push(&mut w, 33, false, true, 400), Pushed::TooLate);
-        assert_eq!(push(&mut w, 66, false, true, 70), Pushed::WaitingForKeyframe);
+        assert_eq!(
+            push(&mut w, 66, false, true, 70),
+            Pushed::WaitingForKeyframe
+        );
         assert!(w.keyframe_request(t(70)));
     }
 
@@ -357,11 +384,17 @@ mod tests {
 
     #[test]
     fn the_target_is_clamped_and_restart_waits_for_a_keyframe() {
-        assert_eq!(JitterBuffer::<u32>::new(Duration::ZERO, false).target(), TARGET_RANGE.0);
+        assert_eq!(
+            JitterBuffer::<u32>::new(Duration::ZERO, false).target(),
+            TARGET_RANGE.0
+        );
         let mut v = JitterBuffer::new(DEFAULT_TARGET, true);
         push(&mut v, 0, true, true, 0);
         v.restart();
         assert!(v.is_empty());
-        assert_eq!(push(&mut v, 33, false, true, 33), Pushed::WaitingForKeyframe);
+        assert_eq!(
+            push(&mut v, 33, false, true, 33),
+            Pushed::WaitingForKeyframe
+        );
     }
 }

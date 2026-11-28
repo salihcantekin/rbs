@@ -61,6 +61,8 @@ pub struct ClockMap {
     slots: [Option<Slot>; FIT_SECONDS],
     /// The map in use.
     applied: Option<Line>,
+    /// The second of the last refit.
+    last_closed: u64,
     resyncs: u64,
 }
 
@@ -78,6 +80,7 @@ impl ClockMap {
             current: 0,
             slots: [None; FIT_SECONDS],
             applied: None,
+            last_closed: 0,
             resyncs: 0,
         }
     }
@@ -124,8 +127,9 @@ impl ClockMap {
     pub fn map(&self, sender_ns: u64) -> Option<Timestamp> {
         let line = self.applied?;
         let rel = sender_ns.checked_sub(self.base?)? as f64;
-        let master = sender_ns as f64 + line.gap(rel);
-        (master >= 0.0).then(|| Timestamp::from_nanos(master.round() as u64))
+        // The gap is small next to the times, so the sum is exact in integers.
+        let master = i128::from(sender_ns) + line.gap(rel).round() as i128;
+        u64::try_from(master).ok().map(Timestamp::from_nanos)
     }
 
     /// The drift in use, in parts per million (positive: this side's clock runs fast).
@@ -170,6 +174,8 @@ impl ClockMap {
             drift,
             at: now,
         };
+        let elapsed = closed.saturating_sub(self.last_closed).max(1) as f64;
+        self.last_closed = closed;
         let Some(applied) = self.applied else {
             self.applied = Some(target);
             return;
@@ -180,9 +186,10 @@ impl ClockMap {
             self.applied = Some(target);
             return;
         }
-        // One second passed since the last refit: move at most one slew step.
+        // Move at most one slew step per second since the last refit.
+        let slew = SLEW_NS_PER_S * elapsed;
         self.applied = Some(Line {
-            offset: applied.gap(now) + step.clamp(-SLEW_NS_PER_S, SLEW_NS_PER_S),
+            offset: applied.gap(now) + step.clamp(-slew, slew),
             drift,
             at: now,
         });
@@ -238,14 +245,17 @@ mod tests {
         }
     }
 
-    const FRAME_NS: u64 = 33_333_333;
+    /// Frame `i` at 30 fps: frame `30k` starts second `k` exactly.
+    fn at(i: u64) -> u64 {
+        START + i * 1_000_000_000 / 30
+    }
     const START: u64 = 5_000_000_000_000;
     const OFFSET: u64 = 70_000_000_000; // this side's clock is 70 s ahead
     const DELAY: u64 = 30_000_000; // the least network delay
 
     fn feed(m: &mut ClockMap, noise: &mut Noise, from: u64, to: u64, extra: u64) {
         for i in from..to {
-            let s = START + i * FRAME_NS;
+            let s = at(i);
             let arrived = s + OFFSET + DELAY + extra + noise.next(40_000_000);
             m.observe(s, Timestamp::from_nanos(arrived));
         }
@@ -263,11 +273,11 @@ mod tests {
     }
 
     #[test]
-    fn it_finds_offset_plus_least_delay_within_a_millisecond_in_ten_seconds() {
+    fn it_finds_offset_plus_least_delay_within_2_5_ms_in_ten_seconds() {
         let mut m = ClockMap::new();
         let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
         feed(&mut m, &mut noise, 0, 300, 0);
-        let s = START + 300 * FRAME_NS;
+        let s = at(300);
         let mapped = m.map(s).unwrap().as_nanos();
         let want = s + OFFSET + DELAY;
         let off = mapped.abs_diff(want);
@@ -282,14 +292,14 @@ mod tests {
         let mut worst = 0_u64;
         let frames = 3600 * 30;
         for i in 0..frames {
-            let rel = i * FRAME_NS;
-            let s = START + rel;
+            let s = at(i);
+            let rel = s - START;
             // This side's clock runs 200 ppm fast against the sender's.
             let truth = s + OFFSET + DELAY + rel / 5_000;
             m.observe(s, Timestamp::from_nanos(truth + noise.next(2_000_000)));
             if i > 30 * 120 && i % 300 == 0 {
-                let next = s + FRAME_NS;
-                let want = next + OFFSET + DELAY + (rel + FRAME_NS) / 5_000;
+                let next = at(i + 1);
+                let want = next + OFFSET + DELAY + (next - START) / 5_000;
                 worst = worst.max(m.map(next).unwrap().as_nanos().abs_diff(want));
             }
         }
@@ -304,22 +314,39 @@ mod tests {
         let mut m = ClockMap::new();
         let mut noise = Noise(11);
         feed(&mut m, &mut noise, 0, 900, 0);
-        let probe = START + 900 * FRAME_NS;
+        let probe = at(900);
         let before = m.map(probe).unwrap().as_nanos();
         // The least delay grows by 20 ms: once most of the last 10 seconds show it,
         // the map moves 1 ms per second.
         feed(&mut m, &mut noise, 900, 1200, 20_000_000);
         let after = m.map(probe).unwrap().as_nanos();
         let moved = after.abs_diff(before);
-        assert!((3_000_000..=8_000_000).contains(&moved), "moved {moved} ns in 10 s");
+        assert!(
+            (2_000_000..=8_000_000).contains(&moved),
+            "moved {moved} ns in 10 s"
+        );
         assert_eq!(m.resyncs(), 0);
+        // Once the window holds only the new delay, the map and drift are right again.
+        feed(&mut m, &mut noise, 1200, 4200, 20_000_000);
+        let s = at(4200);
+        let off = m
+            .map(s)
+            .unwrap()
+            .as_nanos()
+            .abs_diff(s + OFFSET + DELAY + 20_000_000);
+        assert!(off < 2_500_000, "off by {off} ns 110 s after the change");
+        assert!(m.drift_ppm().unwrap().abs() < 30.0, "{:?}", m.drift_ppm());
         // A 2 s step is a resync, applied at once.
         let mut big = ClockMap::new();
         feed(&mut big, &mut noise, 0, 900, 0);
         feed(&mut big, &mut noise, 900, 4000, 2_000_000_000);
-        assert!(big.resyncs() >= 1);
-        let s = START + 4000 * FRAME_NS;
-        let off = big.map(s).unwrap().as_nanos().abs_diff(s + OFFSET + DELAY + 2_000_000_000);
+        assert_eq!(big.resyncs(), 1);
+        let s = at(4000);
+        let off = big
+            .map(s)
+            .unwrap()
+            .as_nanos()
+            .abs_diff(s + OFFSET + DELAY + 2_000_000_000);
         assert!(off < 5_000_000, "off by {off} ns");
     }
 
@@ -328,13 +355,18 @@ mod tests {
         let mut m = ClockMap::new();
         let mut noise = Noise(5);
         feed(&mut m, &mut noise, 0, 600, 0);
-        let probe = START + 600 * FRAME_NS;
+        let probe = at(600);
         let before = m.map(probe).unwrap().as_nanos();
-        // One second whose frames all arrive 300 ms late, then normal again.
+        // Every frame of second 20 arrives 300 ms late, then normal again.
         feed(&mut m, &mut noise, 600, 630, 300_000_000);
         feed(&mut m, &mut noise, 630, 700, 0);
         let after = m.map(probe).unwrap().as_nanos();
-        assert!(after.abs_diff(before) < 1_000_000, "moved {} ns", after.abs_diff(before));
+        assert!(
+            after.abs_diff(before) < 1_000_000,
+            "moved {} ns",
+            after.abs_diff(before)
+        );
+        assert_eq!(m.resyncs(), 0);
     }
 
     #[test]

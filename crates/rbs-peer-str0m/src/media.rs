@@ -90,6 +90,8 @@ pub struct MediaCounters {
     pub gated: u64,
     /// Frames dropped because the guest source did not take them in time.
     pub overflow: u64,
+    /// Bytes of those frames.
+    pub overflow_bytes: u64,
     /// Keyframe requests from the peer (PLI or FIR).
     pub keyframe_requests: u64,
 }
@@ -104,6 +106,8 @@ pub struct MediaState {
     received: VecDeque<Received>,
     estimate: Option<u64>,
     counters: MediaCounters,
+    /// A received frame was dropped: the next one is marked not contiguous.
+    gap_next: bool,
 }
 
 impl MediaState {
@@ -216,9 +220,12 @@ impl MediaState {
             self.counters.gated += 1;
             return;
         }
-        if self.received.len() >= MAX_RECEIVED {
-            self.received.pop_front();
+        if self.received.len() >= MAX_RECEIVED
+            && let Some(lost) = self.received.pop_front()
+        {
             self.counters.overflow += 1;
+            self.counters.overflow_bytes += lost.data.len() as u64;
+            self.gap_next = true;
         }
         let capture_nanos = data.ext_vals.abs_capture_time.and_then(|t| {
             t.capture_time
@@ -232,7 +239,7 @@ impl MediaState {
             rtp_time: data.time.numer(),
             capture_nanos,
             keyframe: track == Track::Video && data.is_keyframe(),
-            contiguous: data.contiguous,
+            contiguous: data.contiguous && !std::mem::take(&mut self.gap_next),
             arrived: data.network_time,
         });
         self.counters.received += 1;
