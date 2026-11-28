@@ -66,8 +66,7 @@ fn native_target() -> Option<DecodeOutput> {
 }
 
 /// The real factory, with every session forced to `target` (the suite always asks
-/// for system memory), with 8 surfaces: the suite holds every picture of a clip at
-/// once, so the clip has at most 8 packets.
+/// for system memory).
 struct WithTarget(MfH264DecoderFactory, DecodeOutput);
 
 impl AdapterFactory for WithTarget {
@@ -84,8 +83,7 @@ impl AdapterFactory for WithTarget {
 
 impl VideoDecoderFactory for WithTarget {
     fn create(&self, config: &VideoDecoderConfig) -> Result<Box<dyn VideoDecoder>, CreateError> {
-        let config = config.clone().with_target(self.1).with_min_surfaces(8);
-        self.0.create(&config)
+        self.0.create(&config.clone().with_target(self.1))
     }
 }
 
@@ -118,7 +116,7 @@ fn passes_the_decoder_suite_in_system_memory() {
 
 #[test]
 fn passes_the_decoder_suite_with_native_output() {
-    let Some(clip) = clip(8) else { return };
+    let Some(clip) = clip(10) else { return };
     let Some(target) = native_target() else {
         eprintln!("no DXGI adapter: skipped");
         return;
@@ -274,6 +272,12 @@ fn hostile_bytes_give_typed_errors_and_decoding_continues() {
     for b in corrupted.iter_mut().skip(40).step_by(7) {
         *b ^= 0x5a;
     }
+    for t in [0u8, 13, 14, 15, 20] {
+        cases.push(vec![0, 0, 0, 1, t, 0x42, 0, 0x1e]);
+    }
+    // Only bytes that pass every check (a valid SPS, a corrupted slice) reach the MFT,
+    // which may refuse them: the one case where a platform `Failed` is allowed.
+    let platform_case = cases.len();
     cases.push(corrupted);
     let mut out = Vec::new();
     for (round, bytes) in cases.iter().enumerate() {
@@ -295,10 +299,10 @@ fn hostile_bytes_give_typed_errors_and_decoding_continues() {
                 Ok(())
                 | Err(
                     DecodeError::InvalidInput(_)
-                    | DecodeError::NeedKeyframe
-                    | DecodeError::Busy
-                    | DecodeError::Failed { .. },
+                    | DecodeError::Unsupported(_)
+                    | DecodeError::NeedKeyframe,
                 ) => {}
+                Err(DecodeError::Failed { .. }) if round == platform_case => {}
                 Err(e) => panic!("case {round}: unexpected {e:?}"),
             }
             let _ = d.drain(&mut out);
@@ -315,6 +319,65 @@ fn hostile_bytes_give_typed_errors_and_decoding_continues() {
     }
 }
 
+fn packet(bytes: &[u8], pts: Timestamp) -> EncodedPacket {
+    EncodedPacket::new(
+        CodecId::H264,
+        BitstreamFormat::AnnexB,
+        pts,
+        pts,
+        false,
+        Bytes::from(bytes.to_vec()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn packets_without_a_slice_wait_for_no_picture() {
+    let Some(clip) = clip(6) else { return };
+    let mut d = session(DecodeOutput::system(), 3);
+    let mut frames = Vec::new();
+    decode(&mut d, &clip.packets[..2], &mut frames);
+    let aud = [0, 0, 0, 1, 0x09, 0xf0];
+    let sei = [0, 0, 0, 1, 0x06, 0x05, 0x01, 0x00, 0x80];
+    for i in 0..20u64 {
+        let bytes: &[u8] = if i % 2 == 0 { &aud } else { &sei };
+        d.submit(&packet(bytes, Timestamp::from_nanos(5 + i)))
+            .unwrap();
+        d.drain(&mut frames).unwrap();
+    }
+    decode(&mut d, &clip.packets[2..], &mut frames);
+    d.flush(&mut frames).unwrap();
+    let stamps: Vec<_> = frames.iter().map(VideoFrame::timestamp).collect();
+    let expected: Vec<_> = clip.packets.iter().map(EncodedPacket::pts).collect();
+    assert_eq!(
+        stamps, expected,
+        "no stamp of an SEI or AUD packet, none shifted"
+    );
+}
+
+#[test]
+fn a_mid_stream_sps_above_max_size_is_refused_and_gates() {
+    let Some(clip) = clip(4) else { return };
+    let big = h264::clip(640, 480, 1, Timestamp::from_nanos(3), STEP_NS).unwrap();
+    let config = VideoDecoderConfig::h264_annex_b(Size::new(W, H));
+    let mut d = MfH264DecoderFactory::new().create_session(&config).unwrap();
+    let mut frames = Vec::new();
+    decode(&mut d, &clip.packets[..2], &mut frames);
+    assert!(matches!(
+        d.submit(&big[0]),
+        Err(DecodeError::InvalidInput(_))
+    ));
+    assert!(d.stats().need_keyframe);
+    assert_eq!(d.submit(&clip.packets[2]), Err(DecodeError::NeedKeyframe));
+    // The refused packet left the format alone, and a keyframe resumes decoding.
+    assert_eq!(d.output_format().map(|f| f.size), Some(Size::new(W, H)));
+    d.drain(&mut frames).unwrap();
+    let before = frames.len();
+    decode(&mut d, &clip.packets[..1], &mut frames);
+    d.flush(&mut frames).unwrap();
+    assert_eq!(frames.len(), before + 1);
+}
+
 #[test]
 fn length_prefixed_input_is_refused_at_create() {
     let config = VideoDecoderConfig::h264_annex_b(Size::new(640, 480))
@@ -323,4 +386,36 @@ fn length_prefixed_input_is_refused_at_create() {
         MfH264DecoderFactory::new().create(&config),
         Err(CreateError::Unsupported { .. })
     ));
+}
+
+#[test]
+fn a_cropped_1080p_stream_has_its_display_size() {
+    if clip(1).is_none() {
+        return;
+    }
+    // Coded at 1088 lines, cropped to 1080 by the SPS.
+    let packets = h264::clip(1920, 1080, 2, Timestamp::from_nanos(11), STEP_NS).unwrap();
+    for target in [Some(DecodeOutput::system()), native_target()]
+        .into_iter()
+        .flatten()
+    {
+        let mut d = session(target, 3);
+        let mut frames = Vec::new();
+        decode(&mut d, &packets, &mut frames);
+        d.flush(&mut frames).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.format().size == Size::new(1920, 1080))
+        );
+        if let Some(FramePayload::System(s)) = frames.first().map(VideoFrame::payload) {
+            // The moving gradient's first luma row survives the copy (no row shift).
+            let row = &s.data()[..16];
+            assert!(
+                row.windows(2).filter(|w| w[1] > w[0]).count() >= 8,
+                "{row:?}"
+            );
+        }
+    }
 }

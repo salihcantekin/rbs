@@ -56,16 +56,17 @@ fn main() {
         sorted.sort_by(f64::total_cmp);
         let pick = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
         let mean = ms.iter().sum::<f64>() / ms.len() as f64;
+        let steady_max = ms.iter().skip(1).copied().fold(0.0, f64::max);
+        let over_2ms = ms.iter().skip(1).filter(|&&v| v > 2.0).count();
         let st = d.stats();
         println!(
-            "{name:>6} native={} pictures={} cpu_copies={} dropped={}: mean {mean:.2} ms, p50 {:.2}, p95 {:.2}, max {:.2}, first {:.2}, total {total:.0} ms for {FRAMES}",
+            "{name:>6} native={} pictures={} cpu_copies={} dropped={}: mean {mean:.2} ms, p50 {:.2}, p95 {:.2}, max after the first {steady_max:.2} ({over_2ms} over 2 ms), first {:.2}, total {total:.0} ms for {FRAMES}",
             d.is_native(),
             st.pictures,
             st.cpu_copies,
             st.dropped_no_surface,
             pick(0.5),
             pick(0.95),
-            pick(1.0),
             ms[0],
         );
     }

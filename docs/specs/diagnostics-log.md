@@ -132,7 +132,7 @@ Default filter: `Info` for every area except `Lib` (`Warn`).
 | `engine` | a partition stopped after its restarts | a node restarted; a swap or drain timed out (named by partition, before its worker is joined) | graph built (node and partition counts) | rebuild details, stats summary every 10 s (Trace: 1 s) |
 | `gpu` | device lost | software adapter in use | adapter and backend chosen | surface and format details |
 | `capture`, `audio` | a device failed to open or vanished | a format fallback | device opened or closed, format chosen | formats offered, negotiation |
-| `encode`, `record`, `stream` | a recording or stream failed to start or stopped on an error | encoder fallback, reconnect attempt, frames dropped in the last 5 s | start and stop with encoder, size, rate and bitrate; reconnected | candidates tried, keyframe and pause events |
+| `encode`, `record`, `stream` | a recording or stream failed to start or stopped on an error | encoder fallback, a live decoder falling back to system memory, reconnect attempt, frames dropped in the last 5 s | start and stop with encoder, size, rate and bitrate; reconnected | candidates tried, keyframe and pause events |
 | `browser` | the helper crashed | GPU path fell back to shared memory | helper started and exited (exit code) | page host and path (Debug), IPC message kinds (Trace) |
 | `remote` | the server could not start | a refused connection or token | client connected and left (address with its last part hidden) | each request (Trace) |
 | `addons`, `plugin`, `userdata` | install, load or import failed | a newer file kept read only | installed, imported, exported | file details |

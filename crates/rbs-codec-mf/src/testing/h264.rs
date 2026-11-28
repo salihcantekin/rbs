@@ -102,6 +102,9 @@ pub fn clip(
         header.extend_from_slice(first_unit);
         *first_unit = header;
     }
+    for (unit, _) in &mut units {
+        mark_constrained_baseline(unit);
+    }
     units
         .into_iter()
         .enumerate()
@@ -135,6 +138,22 @@ pub fn two_size_clip(
     let b = clip(second_size.0, second_size.1, frames_each, next, step_ns)?;
     a.extend(b);
     Ok(a)
+}
+
+/// Sets `constraint_set1_flag` in every Baseline SPS of `unit`: the encoder's
+/// Baseline streams use no FMO, ASO or redundant slices, so they are Constrained
+/// Baseline, which the decoder's allow list requires. The flag byte follows the
+/// profile byte and is never part of an emulation prevention sequence once nonzero.
+fn mark_constrained_baseline(unit: &mut [u8]) {
+    let mut i = 0;
+    while i + 6 <= unit.len() {
+        if unit[i..i + 3] == [0, 0, 1] && unit[i + 3] & 0x1f == NAL_SPS && unit[i + 4] == 66 {
+            unit[i + 5] |= 0x40;
+            i += 6;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// LUID of the first DXGI adapter (the one the studio renders on by default), in the

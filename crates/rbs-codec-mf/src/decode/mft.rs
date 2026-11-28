@@ -5,6 +5,9 @@
 //! to; the MTA is kept alive by [`crate::win::ensure_mta`].
 
 use rbs_codec::DecodeError;
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+};
 use windows::Win32::Media::MediaFoundation::{
     CLSID_MSH264DecoderMFT, CODECAPI_AVDecVideoAcceleration_H264, CODECAPI_AVLowLatencyMode,
     IMFDXGIDeviceManager, IMFMediaType, IMFSample, IMFTransform, MF_LOW_LATENCY,
@@ -19,7 +22,15 @@ use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::{GUID, Interface};
 
 /// A decode failure the session survives (keyframe gating follows).
+/// A removed, reset or hung D3D device is `DeviceLost` (the session must be recreated).
 pub(crate) fn failed(what: &str, e: &windows::core::Error) -> DecodeError {
+    let code = e.code();
+    if code == DXGI_ERROR_DEVICE_REMOVED
+        || code == DXGI_ERROR_DEVICE_RESET
+        || code == DXGI_ERROR_DEVICE_HUNG
+    {
+        return DecodeError::DeviceLost;
+    }
     DecodeError::Failed {
         reason: format!("{what}: {e}"),
         recoverable: true,

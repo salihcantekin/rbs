@@ -23,10 +23,9 @@ use std::time::Duration;
 use rbs_capture::handoff::{Grave, Graveyard, Ring};
 use rbs_codec::DecodeError;
 use rbs_core::media::{
-    ColorSpace, D3dApi, Lease, LeaseOwner, NativeSurface, PixelFormat, Size, SurfaceSync,
-    VideoFormat, VideoFrame,
+    D3dApi, Lease, LeaseOwner, NativeSurface, PixelFormat, Size, SurfaceSync, VideoFormat,
+    VideoFrame,
 };
-use rbs_core::time::Timestamp;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, LUID, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
@@ -46,6 +45,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::{Interface, PCWSTR};
 
+use super::Placement;
 use super::mft::failed;
 
 /// How long a handed-out texture handle stays open after its last use (the file
@@ -104,21 +104,23 @@ impl Drop for SlotTexture {
     }
 }
 
-/// A D3D11 object moved between the worker and the janitor.
+/// A slot texture moved between the worker and the janitor.
 ///
-/// D3D11 objects of a device created with multithread protection may be released on
-/// any thread, and the adapter never uses a wrapped object from two threads at once.
-struct Sendable<T>(T);
+/// The texture belongs to a D3D11 device created with multithread protection, so it
+/// may be released on any thread, and the adapter never uses it from two threads at
+/// once (the worker only while the slot is claimed, the janitor only after the last
+/// lease is gone). The NT handle is a plain kernel handle, closable on any thread.
+struct Sendable(SlotTexture);
 
 // SAFETY: see the type's doc.
-unsafe impl<T> Send for Sendable<T> {}
+unsafe impl Send for Sendable {}
 
 /// The slots and the textures they name. Frames hold an `Arc` of it in their lease.
 struct Pool {
     ring: Ring,
     /// One entry per slot. Only the worker (and the janitor, after the last lease)
     /// locks it, never a lease.
-    textures: Mutex<Vec<Option<Sendable<SlotTexture>>>>,
+    textures: Mutex<Vec<Option<Sendable>>>,
 }
 
 // SAFETY: delegates to `Ring`, whose counts are exact: the worker claims a slot (one
@@ -245,14 +247,13 @@ impl Gpu {
         self.slots
     }
 
-    /// Copies the `size` (cropped) picture of `sample` into a free slot.
+    /// Copies the cropped picture `at` of `sample` into a free slot.
     pub(crate) fn picture(
         &mut self,
         sample: &IMFSample,
-        size: Size,
-        pts: Timestamp,
-        color: ColorSpace,
+        at: Placement,
     ) -> Result<GpuPicture, DecodeError> {
+        let size = at.size;
         // SAFETY: plain calls on a live sample and its buffer; `GetResource` writes an
         // owned reference of the requested interface, which `from_raw` takes over.
         let (source, subresource) = unsafe {
@@ -275,18 +276,13 @@ impl Gpu {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: a valid out pointer on a live texture.
         unsafe { source.GetDesc(&mut desc) };
-        if desc.Format != DXGI_FORMAT_NV12
-            || desc.Width < size.width
-            || desc.Height < size.height
-            || !size.width.is_multiple_of(2)
-            || !size.height.is_multiple_of(2)
-        {
+        if desc.Format != DXGI_FORMAT_NV12 || !at.fits(desc.Width, desc.Height) {
             return Ok(GpuPicture::NotGpu);
         }
         let Some(slot) = self.pool.ring.claim() else {
             return Ok(GpuPicture::NoSlot);
         };
-        let handle = match self.write_slot(slot, &source, subresource, size) {
+        let handle = match self.write_slot(slot, &source, subresource, at) {
             Ok(handle) => handle,
             Err(e) => {
                 self.pool.ring.abandon(slot);
@@ -295,14 +291,15 @@ impl Gpu {
         };
         // SAFETY: `claim` counted exactly one reference to `slot`, handed over here.
         let lease = unsafe { Lease::adopt(Arc::clone(&self.owner), slot as u64) };
-        let format = VideoFormat::new(size, PixelFormat::Nv12, color);
+        let format = VideoFormat::new(size, PixelFormat::Nv12, at.color);
         let surface = NativeSurface::d3d_shared_handle(handle, true, D3dApi::D3d11, self.luid);
         // SAFETY: the handle names the slot's NV12 texture of `size` on the adapter of
         // `luid`, which the pool keeps (with the handle open) while the slot is
         // referenced; the worker writes it only after every reference is released, and
         // a replaced or dropped texture waits out the grace in the graveyard. The copy
         // has completed (fence waited).
-        let frame = unsafe { VideoFrame::native(format, pts, surface, SurfaceSync::Ready, lease) };
+        let frame =
+            unsafe { VideoFrame::native(format, at.pts, surface, SurfaceSync::Ready, lease) };
         Ok(GpuPicture::Native(frame))
     }
 
@@ -313,8 +310,9 @@ impl Gpu {
         slot: usize,
         source: &ID3D11Texture2D,
         subresource: u32,
-        size: Size,
+        at: Placement,
     ) -> Result<u64, DecodeError> {
+        let size = at.size;
         let mut textures = lock(&self.pool.textures);
         let entry = textures
             .get_mut(slot)
@@ -336,16 +334,16 @@ impl Gpu {
             return Err(device_error("slot", &windows::core::Error::empty()));
         };
         let region = D3D11_BOX {
-            left: 0,
-            top: 0,
+            left: at.left,
+            top: at.top,
             front: 0,
-            right: size.width,
-            bottom: size.height,
+            right: at.left + size.width,
+            bottom: at.top + size.height,
             back: 1,
         };
         // SAFETY: both textures are NV12 and live on this device; the destination slot
-        // is claimed (no reader) and sized to the picture, and the even-sized box lies
-        // inside the decoded texture (checked by the caller). The device is
+        // is claimed (no reader) and sized to the picture, and the even-aligned box lies
+        // inside the decoded texture (`Placement::fits`, checked by the caller). The device is
         // multithread protected, so the immediate context is serialized with the MFT.
         unsafe {
             self.context.CopySubresourceRegion(
@@ -437,7 +435,7 @@ fn create_shared_nv12(
 
 /// A slot texture replaced for another size. Its slot was claimed by the worker, so
 /// nobody references it; it is kept a full grace from burial.
-struct TextureGrave(Sendable<SlotTexture>);
+struct TextureGrave(Sendable);
 
 impl Grave for TextureGrave {
     fn is_idle(&self) -> bool {
