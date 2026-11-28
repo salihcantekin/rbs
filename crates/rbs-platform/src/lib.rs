@@ -79,6 +79,7 @@ pub fn adapters(options: &Options) -> PlatformAdapters {
     };
     register_common(&mut a, &mut note);
     register_platform_io(&mut a, &mut note);
+    register_guest_decoders(&mut a);
     let video_encoders = video_encoder_factories();
     for factory in &video_encoders {
         note(a.video_encoders.register(Arc::clone(factory)));
@@ -208,6 +209,20 @@ fn register_platform_io(
         );
     }
     let _ = (a, note);
+}
+
+/// Live decoders of guest sources (ADR-0139): the platform's H.264 decoder and Opus.
+/// Nothing opens before a guest pairing connects. Pictures come in system memory until
+/// the studio names its GPU adapter and import kinds (`GuestDecoding::set_output`).
+fn register_guest_decoders(a: &mut RecordAdapters) {
+    let guest = a.sources.guest_decoding();
+    #[cfg(windows)]
+    guest.add_video(Arc::new(rbs_codec_mf::MfH264DecoderFactory::new()));
+    #[cfg(target_os = "macos")]
+    guest.add_video(Arc::new(
+        rbs_codec_videotoolbox::VideoToolboxDecoderFactory::new(),
+    ));
+    guest.set_audio(Arc::new(rbs_codec_opus::OpusDecoderFactory));
 }
 
 /// Video encoders in preference order. Hardware adapters come first; a software

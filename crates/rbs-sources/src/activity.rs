@@ -13,7 +13,7 @@ pub fn activity_traits(type_id: &NodeTypeId) -> ActivityTraits {
     match class_of(type_id) {
         Some(SourceClass::Media) => MEDIA_ACTIVITY,
         Some(SourceClass::Browser) => BROWSER_ACTIVITY,
-        Some(SourceClass::Capture(_)) => CAPTURE_ACTIVITY,
+        Some(SourceClass::Capture(_) | SourceClass::Guest) => CAPTURE_ACTIVITY,
         Some(SourceClass::Slideshow) => SLIDESHOW_ACTIVITY,
         _ => ActivityTraits::PLACED,
     }
@@ -112,7 +112,10 @@ mod activity_tests {
             assert_eq!(temporal, expected, "{name}");
             let capture = matches!(
                 name,
-                types::DISPLAY_SOURCE | types::WINDOW_SOURCE | types::CAMERA_SOURCE
+                types::DISPLAY_SOURCE
+                    | types::WINDOW_SOURCE
+                    | types::CAMERA_SOURCE
+                    | types::GUEST_SOURCE
             );
             assert_eq!(
                 traits.runs.contains(&Run::OnAir),

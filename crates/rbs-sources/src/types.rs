@@ -30,9 +30,12 @@ pub const BROWSER_SOURCE: &str = "org.rbs.source.browser";
 pub const TEXT_SOURCE: &str = "org.rbs.source.text";
 /// A folder of PNG and JPEG pictures shown in turn (ADR-0171).
 pub const SLIDESHOW_SOURCE: &str = "org.rbs.source.slideshow";
+/// Picture and sound from another RBS's guest share (ADR-0139, spec `guest-source.md`).
+/// Installed only when live video and Opus decoders are registered.
+pub const GUEST_SOURCE: &str = "org.rbs.source.guest";
 
 /// Every built-in source type, in a fixed order.
-pub const ALL: [&str; 12] = [
+pub const ALL: [&str; 13] = [
     DISPLAY_SOURCE,
     WINDOW_SOURCE,
     CAMERA_SOURCE,
@@ -45,6 +48,7 @@ pub const ALL: [&str; 12] = [
     BROWSER_SOURCE,
     TEXT_SOURCE,
     SLIDESHOW_SOURCE,
+    GUEST_SOURCE,
 ];
 
 /// Settings keys. Keys a type does not use are ignored, so a document written by a
@@ -214,6 +218,9 @@ pub enum SourceClass {
     Text,
     /// A folder of pictures shown in turn (ADR-0171). Video pin only; never still.
     Slideshow,
+    /// Another RBS's guest share (ADR-0139). A picture node and a sound node; runs
+    /// like a capture (warm while placed).
+    Guest,
 }
 
 /// The class of a built-in source type, or `None` for any other type.
@@ -230,6 +237,7 @@ pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass> {
         BROWSER_SOURCE => SourceClass::Browser,
         TEXT_SOURCE => SourceClass::Text,
         SLIDESHOW_SOURCE => SourceClass::Slideshow,
+        GUEST_SOURCE => SourceClass::Guest,
         _ => return None,
     })
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::SourceMapping;
-use rbs_audio::{AudioGraphConfig, InputNode, InputParams, InputStats};
+use rbs_audio::{AudioGraphConfig, InputNode};
 use rbs_audio_io::caps as audio_caps;
 use rbs_audio_io::{
     AudioBackend, AudioIoError, AudioOutput, EndpointId, EndpointKind, InputRequest, OutputRequest,
@@ -19,13 +19,14 @@ use rbs_core::registry::{AdapterFactory, AdapterId, DuplicateAdapter, Registry};
 use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::{NodeDescriptor, NodeTypeId};
-use rbs_graph::runtime::param::ParamSender;
-use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::{CaptureSourceNode, StillSourceNode};
 use rbs_scene::activity::ActivityTraits;
 use rbs_scene::binder::{COMPOSITOR_TYPE, MIXER_TYPE, NodeTypes};
 use rbs_scene::model::{SettingValue, Settings, Source};
 
+pub use crate::instance::{
+    AudioSource, BrowserSource, MediaSource, SourceInstance, StillSource, TextSource, VideoSource,
+};
 pub use crate::media_settings::apply_media_live;
 use crate::media_settings::{media_range, validate_media};
 use crate::permissions::{self, AdapterAnswer, PermissionInfo, PermissionKind};
@@ -305,150 +306,6 @@ impl InstanceContext {
     }
 }
 
-/// A capture source node for the render partition (`Node<GpuRuntime>`).
-#[non_exhaustive]
-pub struct VideoSource {
-    /// The node; it opens the session in `prepare`.
-    pub node: CaptureSourceNode,
-    /// Its counters.
-    pub stats: Arc<CaptureNodeStats>,
-    /// The adapter it captures with.
-    pub adapter: AdapterId,
-    /// The target it captures (the default one if the settings named none).
-    pub target: TargetId,
-}
-
-/// An audio input node for the audio partition (`Node<X>` for any runtime).
-#[non_exhaustive]
-pub struct AudioSource {
-    /// The node, holding an opened stream in Standby (no device activity until
-    /// `prepare`, audio input port contract).
-    pub node: InputNode,
-    /// The sync offset channel (ADR-0023).
-    pub offset: ParamSender<InputParams>,
-    /// Its counters.
-    pub stats: Arc<InputStats>,
-    /// The adapter it reads with.
-    pub adapter: AdapterId,
-    /// The endpoint it reads (the default one if the settings named none).
-    pub endpoint: EndpointId,
-}
-
-/// A still source node for the render partition (ADR-0074).
-#[non_exhaustive]
-pub struct StillSource {
-    /// The node; it uploads its picture in `warm` and costs nothing per frame.
-    pub node: StillSourceNode,
-    /// Its counters (`picture_size` is known from the start).
-    pub stats: Arc<CaptureNodeStats>,
-}
-
-/// A media-file source (ADR-0108 decision 1): a picture node and a sound node fed by
-/// one decode worker.
-#[non_exhaustive]
-pub struct MediaSource {
-    /// The picture node: adopt into the render partition. Standby holds no decoder
-    /// and no rings.
-    pub picture: rbs_nodes::MediaPictureNode,
-    /// The sound node: adopt into the audio partition at the binder's sound node
-    /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
-    /// the worker then decodes no sound.
-    pub sound: rbs_nodes::MediaSoundNode,
-    /// Play, pause, seek, and restart (ADR-0108 decision 10). Control path only.
-    pub control: rbs_nodes::MediaControl,
-    /// Upload, drop, repeat, and underrun counters.
-    pub stats: Arc<rbs_nodes::MediaStats>,
-    /// The decoder factory chosen for this node.
-    pub adapter: AdapterId,
-}
-
-/// A browser source (ADR-0109): a picture node and a sound node fed by one helper. No
-/// helper until the picture node is activated with a slot.
-#[non_exhaustive]
-pub struct BrowserSource {
-    /// The picture node: adopt into the render partition.
-    pub node: crate::browser::BrowserSourceNode,
-    /// The sound node: adopt into the audio partition at the binder's sound node
-    /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
-    /// the page's sound is then dropped by the feed.
-    pub sound: crate::BrowserSoundNode,
-    /// The sound's counters.
-    pub sound_stats: Arc<crate::BrowserSoundStats>,
-}
-
-/// A text source node (ADR-0129). It shows nothing until the worker sends a picture.
-#[non_exhaustive]
-pub struct TextSource {
-    /// The node.
-    pub node: rbs_nodes::TextSourceNode,
-    /// The node's picture channel; the text worker keeps it.
-    pub frames: ParamSender<Option<rbs_nodes::TextFrame>>,
-    /// Its counters.
-    pub stats: Arc<rbs_nodes::TextNodeStats>,
-    /// Its settings, read leniently.
-    pub settings: crate::text::TextSettings,
-}
-
-/// A node instance for a bound source.
-#[non_exhaustive]
-pub enum SourceInstance {
-    /// Adopt into the render partition.
-    Still(StillSource),
-    /// Adopt into the render partition.
-    Video(VideoSource),
-    /// The picture node into the render partition, the sound node into the audio
-    /// partition (ADR-0106). Boxed: far larger than the other variants.
-    Media(Box<MediaSource>),
-    /// Adopt into the render partition. No audio pin.
-    Browser(BrowserSource),
-    /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
-    /// carries its settings.
-    Text(Box<TextSource>),
-    /// Adopt into the render partition; attach `frames` to the slide show hub
-    /// (ADR-0171). Boxed like text.
-    Slideshow(Box<crate::slideshow::SlideshowSource>),
-    /// Adopt into the audio partition. Boxed: larger than the picture variants.
-    Audio(Box<AudioSource>),
-}
-
-impl fmt::Debug for SourceInstance {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SourceInstance::Still(s) => f
-                .debug_struct("Still")
-                .field("size", &s.node.size())
-                .finish_non_exhaustive(),
-            SourceInstance::Video(v) => f
-                .debug_struct("Video")
-                .field("adapter", &v.adapter)
-                .field("target", &v.target)
-                .finish_non_exhaustive(),
-            SourceInstance::Media(m) => f
-                .debug_struct("Media")
-                .field("adapter", &m.adapter)
-                .finish_non_exhaustive(),
-            SourceInstance::Browser(b) => f
-                .debug_struct("Browser")
-                .field("running", &b.node.helper_running())
-                .finish_non_exhaustive(),
-            SourceInstance::Text(t) => f
-                .debug_struct("Text")
-                .field("kind", &t.settings.kind)
-                .field("box", &t.settings.block.box_size)
-                .finish_non_exhaustive(),
-            SourceInstance::Slideshow(s) => f
-                .debug_struct("Slideshow")
-                .field("size", &s.size)
-                .finish_non_exhaustive(),
-            SourceInstance::Audio(a) => f
-                .debug_struct("Audio")
-                .field("adapter", &a.adapter)
-                .field("endpoint", &a.endpoint)
-                .finish_non_exhaustive(),
-        }
-    }
-}
-
 /// Node descriptors by type id, for the scene binder. A snapshot: build a new one with
 /// [`SourceTypes::node_types`] after registering or probing adapters.
 #[derive(Debug, Clone, Default)]
@@ -535,6 +392,8 @@ pub struct SourceTypes {
     text_clock: Option<Arc<dyn crate::text_worker::TextClock>>,
     /// The process's input monitor, lent to pointer filters (ADR-0165; `input.rs`).
     pub(crate) input: Option<rbs_input::InputMonitor>,
+    /// Live decoders for guest sources (ADR-0139); the type is installed once complete.
+    guest: crate::guest::GuestDecoding,
 }
 
 impl Default for SourceTypes {
@@ -659,6 +518,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::FPS,
             keys::TRANSPARENT,
         ],
+        SourceClass::Guest => crate::guest::settings::KEYS,
     })
 }
 
@@ -688,6 +548,7 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         Some(SourceClass::Text) => &[],
         // The folder and the output size are identity; the schema keys are options.
         Some(SourceClass::Slideshow) => crate::slideshow::OPTION_KEYS,
+        Some(SourceClass::Guest) => crate::guest::settings::OPTION_KEYS,
     }
 }
 
@@ -704,6 +565,10 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     }
     if class_of(type_id) == Some(SourceClass::Slideshow) {
         return crate::slideshow::validate(settings)
+            .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected });
+    }
+    if class_of(type_id) == Some(SourceClass::Guest) {
+        return crate::guest::settings::validate(settings)
             .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected });
     }
     if class_of(type_id) == Some(SourceClass::Browser) {
@@ -873,6 +738,7 @@ impl SourceTypes {
             text: Vec::new(),
             text_clock: None,
             input: None,
+            guest: crate::guest::GuestDecoding::default(),
         }
     }
 
@@ -930,6 +796,13 @@ impl SourceTypes {
         factory: Arc<dyn rbs_media_decode::MediaDecoderFactory>,
     ) -> Result<(), DuplicateAdapter> {
         self.media.register(factory)
+    }
+
+    /// The live decoders guest sources use (ADR-0139): the composition root adds the
+    /// platform's video decoder factories and the Opus decoder, and the studio sets
+    /// where pictures should live. The guest type is installed once both are there.
+    pub fn guest_decoding(&mut self) -> &mut crate::guest::GuestDecoding {
+        &mut self.guest
     }
 
     /// The capture adapters, to set a preference order or the user's choice.
@@ -1179,7 +1052,8 @@ impl SourceTypes {
             | SourceClass::Media
             | SourceClass::Browser
             | SourceClass::Text
-            | SourceClass::Slideshow => Ok(Vec::new()),
+            | SourceClass::Slideshow
+            | SourceClass::Guest => Ok(Vec::new()),
         }
     }
 
@@ -1191,6 +1065,7 @@ impl SourceTypes {
             Some(SourceClass::Still | SourceClass::Browser | SourceClass::Slideshow) => true,
             Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
             Some(SourceClass::Text) => !self.text.is_empty(),
+            Some(SourceClass::Guest) => self.guest.is_complete(),
             _ => false,
         }
     }
@@ -1245,6 +1120,13 @@ impl SourceTypes {
                 }
                 Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
                 Some(SourceClass::Slideshow) => rbs_nodes::slideshow_descriptor(),
+                Some(SourceClass::Guest) => {
+                    // A guest is a picture node and a sound node (spec `guest-source.md`).
+                    let sound = NodeTypeId::new_static(crate::guest::GUEST_SOUND_NODE_TYPE);
+                    table.insert(sound.clone(), crate::browser_sound_descriptor());
+                    table.insert_sound(t.clone(), sound);
+                    crate::guest::guest_descriptor()
+                }
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -1300,7 +1182,8 @@ impl SourceTypes {
             | SourceClass::Media
             | SourceClass::Browser
             | SourceClass::Text
-            | SourceClass::Slideshow => {}
+            | SourceClass::Slideshow
+            | SourceClass::Guest => {}
         }
         Ok(out)
     }
@@ -1408,6 +1291,18 @@ impl SourceTypes {
             }
             SourceClass::Media => self.instantiate_media(source, ctx),
             SourceClass::Browser => self.instantiate_browser(source, ctx),
+            SourceClass::Guest => {
+                if !self.guest.is_complete() {
+                    return Err(SourceError::NoAdapter(type_id.clone()));
+                }
+                Ok(SourceInstance::Guest(Box::new(crate::guest::guest_source(
+                    crate::guest::next_worker_number(),
+                    Arc::clone(&ctx.clock),
+                    ctx.audio,
+                    self.guest.clone(),
+                    crate::guest::settings::read_settings(settings),
+                ))))
+            }
             SourceClass::Text => {
                 if self.text.is_empty() {
                     return Err(SourceError::NoAdapter(type_id.clone()));

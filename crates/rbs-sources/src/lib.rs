@@ -25,6 +25,7 @@ mod browser_sound;
 mod filters;
 pub mod guest;
 mod input;
+mod instance;
 pub mod jpeg;
 mod layers;
 mod mapping;

@@ -2,10 +2,13 @@
 //! slide show calls of the studio (ADR-0129, ADR-0171). Both hand their node's picture
 //! sender to a control-side worker: the text worker or the slide show hub.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rbs_engine::Engine;
 use rbs_gpu::node::GpuRuntime;
+use rbs_graph::description::{NodeId, PartitionId};
+use rbs_graph::runtime::Node;
 use rbs_scene::model::SourceId;
 use rbs_sources::SourceTypes;
 use rbs_sources::slideshow::{SlideCommand, SlideState, SlideshowHub, SlideshowSource};
@@ -98,4 +101,31 @@ pub(super) fn slideshow_live(
     {
         hub.set_settings(source, rbs_sources::slideshow::read_settings(&s.settings));
     }
+}
+
+/// Where the sound half of a picture-and-sound source goes: the binder's sound node,
+/// the scheduled nodes and the audio partition.
+pub(super) type SoundTarget<'a> = (Option<NodeId>, &'a BTreeSet<NodeId>, PartitionId);
+
+/// Adopts a picture-and-sound source (ADR-0106): the picture node in the render
+/// partition, the sound node at the binder's sound node once it is scheduled (held
+/// until then), and no sound without an audio partition.
+pub(super) fn adopt_with_sound(
+    engine: &mut Engine,
+    entry: &mut Entry,
+    (picture, sound): (Box<dyn Node<GpuRuntime>>, Box<dyn Node<()>>),
+    watch: Watch,
+    (node, scheduled, audio): SoundTarget<'_>,
+) -> Result<(), RecordError> {
+    engine.adopt::<GpuRuntime>(RENDER, entry.state.node, picture)?;
+    let instance = entry.instance.insert(render_instance(watch));
+    match node {
+        Some(node) if scheduled.contains(&node) => {
+            engine.adopt::<()>(audio, node, sound)?;
+            instance.sound = SoundHalf::Adopted(node, audio);
+        }
+        Some(_) => instance.sound = SoundHalf::Held(sound),
+        None => {}
+    }
+    Ok(())
 }

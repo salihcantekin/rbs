@@ -92,11 +92,12 @@ mod group_support;
 mod health;
 use group_support::{program_scene, with_followers};
 mod vcam;
-use adopt::{adopt_slideshow, render_instance, text_worker};
+use adopt::{adopt_slideshow, adopt_with_sound, render_instance, text_worker};
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 use vcam::{CameraDownload, CameraRun, download_share};
 pub use vcam::{VirtualCameraSettings, VirtualCameraState};
 mod glide;
+mod guest;
 mod hold;
 mod iso_audio;
 mod iso_video;
@@ -1257,6 +1258,8 @@ pub struct Studio {
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
     browser_controls: BTreeMap<SourceId, Arc<BrowserControlSidecar>>,
+    /// The control handle of every guest source instance (spec `guest-source.md`).
+    guests: guest::Guests,
     /// The playback handle of every media instance (ADR-0108 decision 10). Empty without media
     /// sources: `service` then does nothing for them.
     media_controls: BTreeMap<SourceId, rbs_nodes::MediaControl>,
@@ -1698,6 +1701,7 @@ impl Studio {
             browser_budget: BrowserBudget::shared(),
             browser_tree,
             browser_controls: BTreeMap::new(),
+            guests: guest::Guests::default(),
             media_controls: BTreeMap::new(),
             text: None,
             slideshows: rbs_sources::slideshow::SlideshowHub::new(),
@@ -1724,8 +1728,7 @@ impl Studio {
                 if !fatal.is_empty() {
                     return Err(studio.fail(fatal));
                 }
-                let sources = studio.sources();
-                let problems = studio.problems.clone();
+                let (sources, problems) = (studio.sources(), studio.problems.clone());
                 for r in &mut studio.outputs {
                     r.report.sources.clone_from(&sources);
                     r.report.problems.clone_from(&problems);
@@ -2509,6 +2512,7 @@ impl Studio {
                 // runner keeps the last picture until the new first paint, at most
                 // 2 s (ADR-0152 decisions 6 and 9, ADR-0149 decision 2). A page that
                 // wakes on this edge is not running yet and loads once.
+                self.guests.set_level(id, level);
                 let was_on_air = self.on_air_levels.contains(&id);
                 if level == Level::OnAir {
                     self.on_air_levels.insert(id);
@@ -2640,6 +2644,7 @@ impl Studio {
         let bound: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
         self.browser_controls
             .retain(|source, _| bound.contains(source));
+        self.guests.retain(&bound);
         // Shared browser budget and helper tree (ADR-0109); captures use canvas size/rate.
         let (width, height) = self.size;
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
@@ -2826,33 +2831,21 @@ impl Studio {
                     adopt_slideshow(&mut self.engine, &mut self.slideshows, entry, *s)?;
                 }
                 SourceInstance::Browser(b) => {
-                    // The picture node in the render partition (ADR-0109); size is
-                    // known from the page settings. The sound node in the audio
-                    // partition at the binder's sound node, as for a media source
-                    // (ADR-0106).
+                    // Size from the page settings (ADR-0109). No audio partition: the
+                    // feed drops the page's sound.
                     let size = b.node.picture_size();
                     self.browser_controls.insert(entry.source, b.node.control());
-                    self.engine
-                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(b.node))?;
-                    let instance = entry.instance.insert(Instance {
-                        partition: RENDER,
-                        gpu: true,
-                        watch: Watch::Sized { size },
-                        offset: None,
-                        sent_offset_ns: 0,
-                        sound: SoundHalf::None,
-                    });
-                    match self.binder.sound_node(entry.source) {
-                        Some(node) if scheduled.contains(&node) => {
-                            self.engine
-                                .adopt::<()>(audio_partition, node, Box::new(b.sound))?;
-                            instance.sound = SoundHalf::Adopted(node, audio_partition);
-                        }
-                        Some(_) => instance.sound = SoundHalf::Held(Box::new(b.sound)),
-                        // No audio partition: no sound node; the feed drops the page's
-                        // sound.
-                        None => {}
-                    }
+                    let sound = self.binder.sound_node(entry.source);
+                    let halves = (Box::new(b.node) as _, Box::new(b.sound) as _);
+                    let watch = Watch::Sized { size };
+                    let to = (sound, &scheduled, audio_partition);
+                    adopt_with_sound(&mut self.engine, entry, halves, watch, to)?;
+                }
+                SourceInstance::Guest(g) => {
+                    let sound = self.binder.sound_node(entry.source);
+                    let level = self.binder.level_of(entry.source).0;
+                    let to = (sound, &scheduled, audio_partition);
+                    self.guests.adopt(&mut self.engine, entry, *g, level, to)?;
                 }
                 _ => {
                     if strictness == Strictness::Strict {
