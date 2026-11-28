@@ -29,10 +29,14 @@
 //!   counted in `cpu_copies`; `max_surfaces()` is then 0). The copy applies the SPS
 //!   crop; colour comes from the VUI, BT.709 limited when absent.
 //! - Errors: a refusal of the stream (`kVTCouldNotFindVideoDecoderErr`,
-//!   `kVTVideoDecoderUnsupportedDataFormatErr` and the like) is `Unsupported`; an
-//!   invalid session, a removed decoder or a session malfunction (sleep, GPU change) is
-//!   `DeviceLost`; any other decode failure is a recoverable `Failed` and gates on the
-//!   next keyframe. A failure to recreate the session for a changed stream is
+//!   `kVTVideoDecoderUnsupportedDataFormatErr`, `kVTCouldNotCreateInstanceErr`) is
+//!   `Unsupported`; an invalid session, a removed decoder or a session malfunction
+//!   (sleep, GPU change) is `DeviceLost`; a decoder malfunction, an allocation failure
+//!   or a busy hardware decoder is a recoverable `Failed` that drops the platform
+//!   session (the next IDR makes a new one); any other decode failure is a recoverable
+//!   `Failed`. Every failure gates on the next keyframe, and a refused SPS or slice
+//!   also forgets the staged parameter sets. An HDR transfer (PQ, HLG) is
+//!   `Unsupported`. A failure to recreate the session for a changed stream is
 //!   `FormatChanged`. Fallbacks to software decode or system memory are logged once at
 //!   Warn in `Area::Encode`.
 //!

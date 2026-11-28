@@ -11,7 +11,9 @@ use objc2_core_video::{
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
 use rbs_codec::VideoDecodeError;
-use rbs_core::media::{Bytes, NativeSurface, PlaneLayout, SurfaceSync, SystemFrame, VideoFrame};
+use rbs_core::media::{
+    Bytes, ColorRange, NativeSurface, PlaneLayout, SurfaceSync, SystemFrame, VideoFrame,
+};
 
 use super::input::Placement;
 use super::slots::{HandOut, Slots};
@@ -37,6 +39,18 @@ fn is_nv12(buffer: &CVPixelBuffer) -> bool {
     (fourcc == FOURCC_420V || fourcc == FOURCC_420F) && CVPixelBufferGetPlaneCount(buffer) == 2
 }
 
+/// `at` with the range the buffer's fourcc states (`'420f'` full, `'420v'` limited),
+/// so the colour handed out describes the samples even if VideoToolbox did not write
+/// the range asked for.
+fn honest(buffer: &CVPixelBuffer, mut at: Placement) -> Placement {
+    at.color.range = if CVPixelBufferGetPixelFormatType(buffer) == FOURCC_420F {
+        ColorRange::Full
+    } else {
+        ColorRange::Limited
+    };
+    at
+}
+
 /// What [`native`] made of a buffer.
 pub(super) enum Native {
     Frame(VideoFrame),
@@ -58,6 +72,7 @@ pub(super) fn native(
     if !is_nv12(&buffer) || (w, h) != (at.size.width, at.size.height) {
         return Native::Copy(buffer);
     }
+    let at = honest(&buffer, at);
     let (surface, lease) = match slots.hand_out(buffer) {
         HandOut::Leased(surface, lease) => (surface, lease),
         HandOut::Full => return Native::NoSlot,
@@ -84,6 +99,7 @@ pub(super) fn system_copy(
             "the decoder gave a picture of another pixel format",
         ));
     }
+    let at = honest(buffer, at);
     let (bw, bh) = size_of(buffer);
     let (left, top) = at
         .origin_in(bw, bh)

@@ -18,7 +18,6 @@ use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use objc2_core_foundation::{CFBoolean, CFNumber, CFRetained, CFType};
@@ -32,11 +31,12 @@ use objc2_core_video::{
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
-    VTDecompressionSession, VTSessionCopyProperty, kVTCouldNotCreateInstanceErr,
-    kVTCouldNotFindVideoDecoderErr, kVTDecompressionPropertyKey_RealTime,
+    VTDecompressionSession, VTSessionCopyProperty, kVTAllocationFailedErr,
+    kVTCouldNotCreateInstanceErr, kVTCouldNotFindVideoDecoderErr,
+    kVTDecompressionPropertyKey_RealTime,
     kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, kVTInvalidSessionErr,
-    kVTSessionMalfunctionErr, kVTVideoDecoderNotAvailableNowErr, kVTVideoDecoderRemovedErr,
-    kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
+    kVTSessionMalfunctionErr, kVTVideoDecoderMalfunctionErr, kVTVideoDecoderNotAvailableNowErr,
+    kVTVideoDecoderRemovedErr, kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
     kVTVideoDecoderUnsupportedDataFormatErr,
 };
 use rbs_codec::VideoDecodeError;
@@ -49,7 +49,9 @@ pub(super) const FOURCC_420V: u32 = u32::from_be_bytes(*b"420v");
 /// `kCVPixelFormatType_420YpCbCr8BiPlanarFullRange`.
 pub(super) const FOURCC_420F: u32 = u32::from_be_bytes(*b"420f");
 
-/// Pictures the callback queue holds; more than one sample ever produces.
+/// Pictures the callback queue holds; more than one sample ever produces (with
+/// synchronous decode a sample produces at most one), so it never fills; a picture that
+/// would overflow it is released and never reaches the worker.
 const OUTPUT_QUEUE: usize = 16;
 
 /// One picture (or a failure) from the output callback.
@@ -61,19 +63,15 @@ pub(super) struct Output {
     pub(super) buffer: Option<CFRetained<CVPixelBuffer>>,
 }
 
+// SAFETY: the pixel buffer is a reference-counted CoreVideo object whose retain and
+// release are thread-safe; its contents are read only by the worker that owns the
+// `Output`.
+unsafe impl Send for Output {}
+
 /// State the callback shares with the worker.
 struct Shared {
     queue: Mutex<VecDeque<Output>>,
-    /// Pictures the callback dropped because the queue was full.
-    overflow: AtomicU64,
 }
-
-// SAFETY: the queue is behind a mutex; the pixel buffers in it are reference-counted
-// CoreVideo objects whose retain and release are thread-safe, and only the worker reads
-// their contents after taking them out of the queue.
-unsafe impl Send for Shared {}
-// SAFETY: see `Send`; every field is accessed through the mutex or an atomic.
-unsafe impl Sync for Shared {}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
@@ -86,7 +84,6 @@ impl Shared {
     fn push(&self, output: Output) {
         let mut queue = lock(&self.queue);
         if queue.len() >= OUTPUT_QUEUE {
-            self.overflow.fetch_add(1, Ordering::Relaxed);
             return;
         }
         queue.push_back(output);
@@ -120,6 +117,34 @@ unsafe extern "C-unwind" fn output_callback(
     let _ = catch_unwind(AssertUnwindSafe(|| shared.push(output)));
 }
 
+/// A failed decode, and whether the VideoToolbox session must be dropped (the next IDR
+/// creates a new one).
+#[derive(Debug)]
+pub(super) struct Failure {
+    pub(super) error: VideoDecodeError,
+    pub(super) drop_session: bool,
+}
+
+impl Failure {
+    /// The failure a VideoToolbox status stands for.
+    pub(super) fn status(what: &str, status: i32) -> Self {
+        Self {
+            error: status_error(what, status),
+            drop_session: DEVICE_LOST.contains(&status) || NEW_SESSION.contains(&status),
+        }
+    }
+}
+
+impl From<VideoDecodeError> for Failure {
+    fn from(error: VideoDecodeError) -> Self {
+        let drop_session = matches!(error, VideoDecodeError::DeviceLost);
+        Self {
+            error,
+            drop_session,
+        }
+    }
+}
+
 /// A VideoToolbox status as a port error.
 pub(super) fn status_error(what: &str, status: i32) -> VideoDecodeError {
     if DEVICE_LOST.contains(&status) {
@@ -144,12 +169,20 @@ const DEVICE_LOST: [i32; 3] = [
     kVTSessionMalfunctionErr,
 ];
 
+/// Statuses after which the session is dropped and made again at the next IDR, while
+/// the error stays recoverable: a decoder malfunction, an allocation failure, or a
+/// hardware decoder busy for now.
+const NEW_SESSION: [i32; 3] = [
+    kVTVideoDecoderMalfunctionErr,
+    kVTAllocationFailedErr,
+    kVTVideoDecoderNotAvailableNowErr,
+];
+
 /// Statuses with which VideoToolbox refuses the stream itself.
-const REFUSALS: [i32; 4] = [
+const REFUSALS: [i32; 3] = [
     kVTCouldNotFindVideoDecoderErr,
     kVTVideoDecoderUnsupportedDataFormatErr,
     kVTCouldNotCreateInstanceErr,
-    kVTVideoDecoderNotAvailableNowErr,
 ];
 
 /// One decompression session and the format description it decodes.
@@ -160,6 +193,11 @@ pub(super) struct Session {
     shared: Arc<Shared>,
     hardware: bool,
 }
+
+// SAFETY: the session and format description are reference-counted CoreFoundation
+// objects without thread affinity; a `Session` is used by one thread at a time (the
+// port's worker), and the callback it registers only touches `Shared` (a mutex).
+unsafe impl Send for Session {}
 
 /// A format description from one SPS and its PPSs (NAL units without start codes).
 fn format_description(
@@ -173,7 +211,8 @@ fn format_description(
         if set.is_empty() {
             return Err(VideoDecodeError::InvalidInput("empty parameter set".into()));
         }
-        pointers[count] = NonNull::from(&set[0]);
+        // The pointer keeps the provenance of the whole NAL unit.
+        pointers[count] = NonNull::from(set).cast::<u8>();
         sizes[count] = set.len();
         count += 1;
     }
@@ -185,8 +224,8 @@ fn format_description(
         CMVideoFormatDescriptionCreateFromH264ParameterSets(
             None,
             count,
-            NonNull::from(&mut pointers[0]),
-            NonNull::from(&mut sizes[0]),
+            NonNull::from(&mut pointers).cast::<NonNull<u8>>(),
+            NonNull::from(&mut sizes).cast::<usize>(),
             LENGTH_SIZE as c_int,
             NonNull::from(&mut raw),
         )
@@ -210,7 +249,6 @@ impl Session {
         let desc = format_description(sps, pps)?;
         let shared = Arc::new(Shared {
             queue: Mutex::new(VecDeque::with_capacity(OUTPUT_QUEUE)),
-            overflow: AtomicU64::new(0),
         });
         // SAFETY: the keys are CoreFoundation constants that live for the process.
         let spec = unsafe {
@@ -258,7 +296,7 @@ impl Session {
         let session: CFRetained<VTDecompressionSession> = unsafe { CFRetained::from_raw(raw) };
         // SAFETY: the key is a CoreFoundation constant. A decoder without real-time
         // mode still decodes; the property is a hint.
-        let _ = unsafe { cf::set_bool(&session, kVTDecompressionPropertyKey_RealTime, true) };
+        let _ = unsafe { cf::set_bool(&*session, kVTDecompressionPropertyKey_RealTime, true) };
         let hardware = using_hardware(&session);
         Ok(Self {
             session,
@@ -276,12 +314,7 @@ impl Session {
     /// Decodes the slices and SEI of `data` (`sample_len` bytes once length-prefixed)
     /// as the sample of submission `index`. Its pictures are in the output queue when
     /// this returns.
-    pub(super) fn decode(
-        &self,
-        data: &[u8],
-        sample_len: usize,
-        index: u64,
-    ) -> Result<(), VideoDecodeError> {
+    pub(super) fn decode(&self, data: &[u8], sample_len: usize, index: u64) -> Result<(), Failure> {
         let sample = self.sample(data, sample_len)?;
         let mut info = VTDecodeInfoFlags::empty();
         // SAFETY: a live session and sample buffer; the refcon is a plain integer the
@@ -297,7 +330,7 @@ impl Session {
         if status == 0 {
             Ok(())
         } else {
-            Err(status_error("decode", status))
+            Err(Failure::status("decode", status))
         }
     }
 

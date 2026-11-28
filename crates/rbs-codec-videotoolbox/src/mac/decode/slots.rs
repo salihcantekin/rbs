@@ -109,6 +109,11 @@ impl Slots {
         self.count
     }
 
+    /// Lease releases the ring refused (a protocol violation; always 0).
+    pub(super) fn misuses(&self) -> u64 {
+        self.pool.ring.misuses()
+    }
+
     /// Drops the buffers of slots nobody references any more.
     fn recycle(&mut self) {
         let mut buffers = lock(&self.pool.buffers);

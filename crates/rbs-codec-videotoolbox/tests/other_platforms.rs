@@ -4,8 +4,10 @@
 #![cfg(not(target_os = "macos"))]
 #![allow(clippy::unwrap_used)] // Tests fail by panicking.
 
-use rbs_codec::{RateControl, VideoEncoderConfig, VideoEncoderFactory};
-use rbs_codec_videotoolbox::VideoToolboxFactory;
+use rbs_codec::{
+    RateControl, VideoDecoderConfig, VideoDecoderFactory, VideoEncoderConfig, VideoEncoderFactory,
+};
+use rbs_codec_videotoolbox::{VideoToolboxDecoderFactory, VideoToolboxFactory};
 use rbs_core::media::{CodecId, ColorSpace, MemoryKind, PixelFormat, Size, VideoFormat};
 use rbs_core::registry::AdapterFactory;
 use rbs_core::timing::FrameRate;
@@ -36,4 +38,13 @@ fn probes_empty_and_refuses_sessions() {
         VideoToolboxFactory::new().id(),
         VideoToolboxFactory::with_software().id()
     );
+}
+
+#[test]
+fn the_decoder_probes_empty_and_refuses_sessions() {
+    let factory = VideoToolboxDecoderFactory::new();
+    assert!(factory.probe().unwrap().is_empty());
+    let config = VideoDecoderConfig::h264_annex_b(Size::new(640, 360));
+    assert!(factory.create(&config).is_err());
+    assert_ne!(factory.id(), VideoToolboxFactory::new().id());
 }

@@ -445,3 +445,40 @@ fn a_cropped_1080p_stream_has_its_display_size() {
         }
     }
 }
+
+/// `packet` without its SPS and PPS (an IDR that relies on earlier parameter sets).
+fn without_parameter_sets(p: &EncodedPacket) -> EncodedPacket {
+    let mut data = Vec::new();
+    for nal in rbs_codec::h264::nal_units(p.data()) {
+        if !matches!(rbs_codec::h264::nal_type(nal), Some(7 | 8)) {
+            data.extend_from_slice(&[0, 0, 0, 1]);
+            data.extend_from_slice(nal);
+        }
+    }
+    packet(&data, p.pts(), p.keyframe())
+}
+
+#[test]
+fn a_refused_sps_forgets_the_parameter_sets_until_new_ones_arrive() {
+    let Some(clip) = suite_clip(3) else { return };
+    let big = clip_or_skip(640, 480, 1);
+    let config = VideoDecoderConfig::h264_annex_b(Size::new(W, H));
+    let mut d = VideoToolboxDecoderFactory::new()
+        .create_session(&config)
+        .unwrap();
+    let mut frames = Vec::new();
+    decode(&mut d, &clip.packets[..2], &mut frames);
+    // A bare IDR decodes on the parameter sets already accepted...
+    let bare = without_parameter_sets(&clip.packets[0]);
+    d.submit(&bare).unwrap();
+    // ...but not after an SPS was refused: only fresh SPS and PPS lift the gate.
+    assert!(matches!(
+        d.submit(&big[0]),
+        Err(VideoDecodeError::InvalidInput(_))
+    ));
+    assert_eq!(d.submit(&bare), Err(VideoDecodeError::NeedKeyframe));
+    d.submit(&clip.packets[0]).unwrap();
+    d.submit(&clip.packets[1]).unwrap();
+    d.drain(&mut frames).unwrap();
+    assert_eq!(frames.len(), 5);
+}

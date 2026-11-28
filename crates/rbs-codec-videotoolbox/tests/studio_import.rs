@@ -184,3 +184,88 @@ fn native_pictures_import_draw_and_return_their_surfaces() {
     assert_eq!(importer.held_leases(), 0);
     assert_eq!(d.stats().cpu_copies, 0);
 }
+
+/// Pictures of the churn clip: 10 s of 1080p30.
+const CHURN_FRAMES: usize = 330;
+/// Pictures decoded while all 8 slots are held: 2 s at 30 fps.
+const HOLD_FRAMES: usize = 60;
+
+/// Pool and importer churn at 1080p: every picture is imported and drawn, its lease
+/// handed back after the GPU is done (as the studio does), and for 2 s of video every
+/// slot is held. VideoToolbox picks the output surfaces itself, so this checks that the
+/// set it cycles through stays small: distinct IOSurface addresses and importer opens
+/// at most 16. Prints the numbers for the spec note.
+#[test]
+#[ignore = "slow: encodes and decodes 11 s of 1080p through the Metal importer"]
+fn slow_pool_and_importer_churn_stays_bounded() {
+    use std::collections::HashSet;
+
+    let ctx = match GpuContext::new(&GpuRequest::default()) {
+        Ok(ctx) => ctx,
+        Err(e) => return skip(&format!("no GPU context ({e})")),
+    };
+    let (w, h) = (1920, 1080);
+    let packets = match decode_support::clip(
+        w,
+        h,
+        CHURN_FRAMES,
+        decode_support::FIRST,
+        decode_support::STEP_NS,
+    ) {
+        Ok(p) => p,
+        Err(e) => return skip(&format!("no H.264 encoder ({e})")),
+    };
+    let mut d = decoder(8);
+    let mut pool = TexturePool::new();
+    let mut importer = Importer::new();
+    let mut comp = Compositor::new(
+        &ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        1,
+    )
+    .unwrap();
+    let canvas = pool.acquire(&ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let opened_before = ctx.metrics().surfaces_opened();
+    let mut surfaces = HashSet::new();
+    let mut out = Vec::new();
+    let mut held = Vec::new();
+    let hold = 100..100 + HOLD_FRAMES;
+    for (i, p) in packets.iter().enumerate() {
+        d.submit(p).unwrap_or_else(|e| panic!("packet {i}: {e}"));
+        d.drain(&mut out)
+            .unwrap_or_else(|e| panic!("drain {i}: {e}"));
+        for frame in out.drain(..) {
+            surfaces.insert(surface_of(&frame));
+            if hold.contains(&i) && held.len() < 8 {
+                held.push(frame); // keep the lease, as a stalled consumer would
+                continue;
+            }
+            let imported = importer.import(&ctx, &mut pool, frame).unwrap();
+            draw(&ctx, &mut pool, &mut comp, canvas, &imported);
+        }
+        importer.retire(&ctx, &mut pool, Timestamp::ZERO);
+        if i == hold.end {
+            held.clear();
+        }
+    }
+    hand_back(&ctx, &mut pool, &mut importer);
+    let opened = ctx.metrics().surfaces_opened() - opened_before;
+    let st = d.stats();
+    eprintln!(
+        "churn: {} packets, {} pictures, {} dropped while held, {} distinct IOSurfaces, {} importer opens, {} misuses",
+        packets.len(),
+        st.pictures,
+        st.dropped_no_surface,
+        surfaces.len(),
+        opened,
+        d.lease_misuses()
+    );
+    assert_eq!(importer.held_leases(), 0);
+    assert_eq!(d.lease_misuses(), 0);
+    assert!(st.dropped_no_surface > 0, "the hold phase filled the pool");
+    assert!(surfaces.len() <= 16, "{} distinct surfaces", surfaces.len());
+    assert!(opened <= 16, "{opened} importer opens");
+}

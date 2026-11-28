@@ -16,7 +16,7 @@ use rbs_core::media::{BitstreamFormat, CodecId, EncodedPacket, MemoryKind, Size,
 use super::input::{self, MAX_PPS, Placement, Seen, invalid};
 use super::picture::{self, Native};
 use super::slots::Slots;
-use super::vt::{FOURCC_420F, FOURCC_420V, Output, Session};
+use super::vt::{FOURCC_420F, FOURCC_420V, Failure, Output, Session};
 
 /// Decoded pictures not drained yet. A full queue is `Busy`.
 const QUEUE: usize = 16;
@@ -61,9 +61,9 @@ impl Params {
             self.info = Some(info);
         }
         if seen.has_pps() {
-            let new: Vec<&[u8]> = seen.pps.iter().flatten().copied().collect();
-            if self.pps.iter().map(Vec::as_slice).ne(new.iter().copied()) {
-                self.pps = new.iter().map(|p| p.to_vec()).collect();
+            let new = || seen.pps.iter().flatten().copied();
+            if self.pps.iter().map(Vec::as_slice).ne(new()) {
+                self.pps = new().map(<[u8]>::to_vec).collect();
             }
         }
     }
@@ -106,12 +106,6 @@ pub struct VtH264Decoder {
     warned_software: bool,
     stats: Counters,
 }
-
-// SAFETY: the VideoToolbox session, format description and pixel buffers are
-// reference-counted CoreFoundation objects without thread affinity; the session is used
-// by one thread at a time (port rule), its callback only touches `Shared` (mutex and
-// atomics), and the leases it hands out touch only the pool's atomics.
-unsafe impl Send for VtH264Decoder {}
 
 impl VtH264Decoder {
     /// Opens a session. Nothing is created on the device before the first keyframe.
@@ -169,14 +163,27 @@ impl VtH264Decoder {
         self.stats.need_keyframe.store(true, Ordering::Relaxed);
     }
 
-    /// After a platform error: gates on the next keyframe. Pictures already decoded
-    /// stay drainable.
-    fn fail_stream(&mut self, e: &VideoDecodeError) {
+    /// Native-pool lease releases the pool refused (a protocol violation; always 0).
+    pub fn lease_misuses(&self) -> u64 {
+        self.slots.as_ref().map_or(0, Slots::misuses)
+    }
+
+    /// After a platform error: gates on the next keyframe, and drops the VideoToolbox
+    /// session when the failure asks for a new one (the next IDR makes it). Pictures
+    /// already decoded stay drainable.
+    fn fail_stream(&mut self, failure: &Failure) {
         self.gate();
         self.pending.clear();
-        if matches!(e, VideoDecodeError::DeviceLost) {
+        if failure.drop_session {
             self.session = None;
         }
+    }
+
+    /// A refused packet that carried an SPS or a slice: the decoder has no valid
+    /// reference and only freshly accepted parameter sets may lift the gate.
+    fn refuse_stream(&mut self) {
+        self.gate();
+        self.staged = Params::default();
     }
 
     /// Makes the session decode the staged parameter sets, recreating it at this IDR
@@ -206,12 +213,14 @@ impl VtH264Decoder {
         }
         self.session = Some(session);
         self.active = self.staged.clone();
+        // A new session may give native pictures again (invariant 9).
+        self.native_failed = false;
         Ok(())
     }
 
     /// Turns the callback's outputs into pictures. Returns the first decode failure a
     /// callback reported; every picture decoded is kept.
-    fn collect(&mut self) -> Result<(), VideoDecodeError> {
+    fn collect(&mut self) -> Result<(), Failure> {
         if let Some(session) = &self.session {
             session.take(&mut self.outputs);
         }
@@ -234,13 +243,13 @@ impl VtH264Decoder {
                 Some(buffer) if output.status == 0 && !output.dropped => buffer,
                 _ => {
                     if output.status != 0 && first_error.is_none() {
-                        first_error = Some(super::vt::status_error("decode", output.status));
+                        first_error = Some(Failure::status("decode", output.status));
                     }
                     continue;
                 }
             };
             if let Err(e) = self.picture(buffer, entry.at) {
-                first_error.get_or_insert(e);
+                first_error.get_or_insert(Failure::from(e));
             }
         }
         first_error.map_or(Ok(()), Err)
@@ -283,12 +292,12 @@ impl VtH264Decoder {
     }
 
     /// Decodes one packet with a slice; gating was checked.
-    fn decode(&mut self, packet: &EncodedPacket, seen: &Seen<'_>) -> Result<(), VideoDecodeError> {
+    fn decode(&mut self, packet: &EncodedPacket, seen: &Seen<'_>) -> Result<(), Failure> {
         if seen.idr {
             self.follow_parameter_sets()?;
         }
         let (Some(session), Some(sps)) = (&self.session, self.active.info) else {
-            return Err(VideoDecodeError::NeedKeyframe);
+            return Err(Failure::from(VideoDecodeError::NeedKeyframe));
         };
         let index = self.next_index;
         self.next_index += 1;
@@ -307,7 +316,8 @@ impl VtH264Decoder {
 
 impl VideoDecoder for VtH264Decoder {
     fn output_format(&self) -> Option<VideoFormat> {
-        let sps = self.staged.info?;
+        // The latest accepted SPS; after a refused one, what the session still decodes.
+        let sps = self.staged.info.or(self.active.info)?;
         Some(Placement::of(&sps, rbs_core::time::Timestamp::ZERO).format())
     }
 
@@ -323,18 +333,18 @@ impl VideoDecoder for VtH264Decoder {
                 if input::carries_slice_or_sps(data)
                     || matches!(e, VideoDecodeError::Unsupported(_))
                 {
-                    self.gate();
+                    self.refuse_stream();
                 }
                 return Err(e);
             }
         };
-        if self.ready.len() >= QUEUE {
-            return Err(VideoDecodeError::Busy);
-        }
         // Parameter sets are kept also while gated, so a later IDR without them decodes.
         self.staged.stage(&seen);
         if !seen.vcl {
             return Ok(()); // no picture: parameter sets, SEI, AUD and the like
+        }
+        if self.ready.len() >= QUEUE {
+            return Err(VideoDecodeError::Busy);
         }
         if self.gated && !(seen.idr && self.staged.complete()) {
             return Err(VideoDecodeError::NeedKeyframe);
@@ -347,9 +357,9 @@ impl VideoDecoder for VtH264Decoder {
                 }
                 Ok(())
             }
-            Err(e) => {
-                self.fail_stream(&e);
-                Err(e)
+            Err(failure) => {
+                self.fail_stream(&failure);
+                Err(failure.error)
             }
         }
     }
@@ -357,10 +367,10 @@ impl VideoDecoder for VtH264Decoder {
     fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), VideoDecodeError> {
         let collected = self.collect();
         out.append(&mut self.ready);
-        if let Err(e) = &collected {
-            self.fail_stream(e);
-        }
-        collected
+        collected.map_err(|failure| {
+            self.fail_stream(&failure);
+            failure.error
+        })
     }
 
     fn reset(&mut self) -> Result<(), VideoDecodeError> {
@@ -383,7 +393,10 @@ impl VideoDecoder for VtH264Decoder {
         out.append(&mut self.ready);
         self.gate();
         self.pending.clear();
-        collected
+        collected.map_err(|failure| {
+            self.fail_stream(&failure);
+            failure.error
+        })
     }
 
     fn max_surfaces(&self) -> usize {

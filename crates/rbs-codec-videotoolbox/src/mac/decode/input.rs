@@ -19,6 +19,9 @@ const NAL_SEI: u8 = 6;
 /// subset SPS (15) and coded slice extension (20), i.e. SVC and MVC streams.
 const REFUSED_NAL_TYPES: [u8; 5] = [0, 13, 14, 15, 20];
 
+/// VUI `transfer_characteristics` of HDR curves: PQ (16) and HLG (18).
+const HDR_TRANSFERS: [u8; 2] = [16, 18];
+
 /// Most picture parameter sets one packet may carry.
 pub(super) const MAX_PPS: usize = 4;
 
@@ -125,6 +128,14 @@ pub(super) fn check_sps(nal: &[u8], max_size: Size) -> Result<Sps, VideoDecodeEr
     }
     if sps.size.width > MAX_DECODE_SIZE.width || sps.size.height > MAX_DECODE_SIZE.height {
         return Err(unsupported("picture above 4096 x 2304"));
+    }
+    if sps
+        .color
+        .is_some_and(|c| HDR_TRANSFERS.contains(&c.transfer))
+    {
+        // Pictures are labelled with the BT.709 transfer; an HDR curve would be shown
+        // wrong, so the stream goes to another adapter instead.
+        return Err(unsupported("HDR transfer (PQ or HLG)"));
     }
     Ok(sps)
 }
@@ -319,6 +330,83 @@ mod tests {
         assert_eq!(at(8, 4, 1920, 1080).origin_in(1920, 1088), None);
         assert_eq!(at(1, 0, 16, 16).origin_in(64, 64), None);
         assert_eq!(at(0, 0, 15, 16).origin_in(64, 64), None);
+    }
+
+    /// Bits of an SPS under construction (`u`: fixed width, `ue`: Exp-Golomb).
+    struct Bits(Vec<bool>);
+
+    impl Bits {
+        fn u(&mut self, v: u32, n: u32) {
+            for i in (0..n).rev() {
+                self.0.push((v >> i) & 1 == 1);
+            }
+        }
+        fn ue(&mut self, v: u32) {
+            let x = u64::from(v) + 1;
+            let len = 64 - x.leading_zeros();
+            self.0.extend(std::iter::repeat_n(false, len as usize - 1));
+            for i in (0..len).rev() {
+                self.0.push((x >> i) & 1 == 1);
+            }
+        }
+        fn nal(mut self) -> Vec<u8> {
+            self.0.push(true);
+            while !self.0.len().is_multiple_of(8) {
+                self.0.push(false);
+            }
+            let mut out = vec![0x67];
+            out.extend(
+                self.0
+                    .chunks(8)
+                    .map(|c| c.iter().fold(0, |a, &b| (a << 1) | u8::from(b))),
+            );
+            out
+        }
+    }
+
+    /// A 64x48 High profile SPS whose VUI states `transfer_characteristics`.
+    fn sps_with_transfer(transfer: u32) -> Vec<u8> {
+        let mut w = Bits(Vec::new());
+        w.u(100, 8);
+        w.u(0, 8);
+        w.u(30, 8);
+        w.ue(0); // sps id
+        w.ue(1); // 4:2:0
+        w.ue(0);
+        w.ue(0); // 8-bit
+        w.u(0, 2); // no bypass, no scaling matrix
+        w.ue(0); // log2_max_frame_num_minus4
+        w.ue(2); // poc type 2
+        w.ue(1); // refs
+        w.u(0, 1);
+        w.ue(3); // 4 MBs wide
+        w.ue(2); // 3 MBs high
+        w.u(1, 1); // frame_mbs_only
+        w.u(1, 1); // direct_8x8
+        w.u(0, 1); // no cropping
+        w.u(1, 1); // vui
+        w.u(0, 2); // no aspect, no overscan
+        w.u(1, 1); // video signal
+        w.u(5, 3);
+        w.u(0, 1); // limited
+        w.u(1, 1); // colour description
+        w.u(9, 8);
+        w.u(transfer, 8);
+        w.u(9, 8);
+        w.nal()
+    }
+
+    #[test]
+    fn an_hdr_transfer_is_unsupported_not_mislabelled() {
+        for transfer in [1, 6, 14] {
+            assert!(check_sps(&sps_with_transfer(transfer), BIG).is_ok());
+        }
+        for transfer in HDR_TRANSFERS {
+            assert!(matches!(
+                check_sps(&sps_with_transfer(u32::from(transfer)), BIG),
+                Err(VideoDecodeError::Unsupported(_))
+            ));
+        }
     }
 
     #[test]
