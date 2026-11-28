@@ -6,15 +6,16 @@
 //! A code is a secret: the one shown and the one pasted are registered with
 //! `rbs_crash::add_secret` while they live, and no call is ever printed with its text.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rbs_api::request::{GuestAcceptAnswer, GuestCommand, GuestShare, GuestShareRef, GuestState};
 use rbs_api::{ApiError, Command as Api, Response};
-use rbs_app::guest_view::{Call, CallError, Flow, Reply, Row, Session, State, words};
+use rbs_app::guest_settings::{self, GuestSettings};
+use rbs_app::guest_view::{self, Call, CallError, Flow, Reply, Row, Session, State, Status, words};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::ui::{GuestWindow, Theme, Tokens};
+use crate::ui::{GuestWindow, SettingsWindow, Theme, Tokens};
 use crate::{App, Ctx, entry, look, window_place};
 
 thread_local! {
@@ -22,6 +23,17 @@ thread_local! {
     static PENDING: RefCell<Vec<(u64, Call)>> = const { RefCell::new(Vec::new()) };
     /// Answers that came back, for the next pump.
     static DONE: RefCell<Vec<(Call, Result<Response, ApiError>)>> = const { RefCell::new(Vec::new()) };
+    /// The ticket of the Settings page's status question, while it is out.
+    static SETTINGS_ASKED: Cell<Option<u64>> = const { Cell::new(None) };
+    /// The shares the last status answer listed, for the Settings page.
+    static SHARES: RefCell<Vec<Line>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One share of a status answer, as Settings › Guests shows it.
+struct Line {
+    share: u32,
+    state: State,
+    text: String,
 }
 
 /// How often the open window asks for the pairing's state while it is open.
@@ -129,10 +141,15 @@ fn schedule(ctx: &Ctx) {
 }
 
 /// The control-API command of a call.
-fn command(call: &Call) -> Option<Api> {
+fn command(call: &Call, settings: &GuestSettings) -> Option<Api> {
     let share = |share| GuestShareRef { share };
     Some(Api::Guest(match call {
-        Call::Share => GuestCommand::Share(GuestShare::default()),
+        Call::Share => GuestCommand::Share(GuestShare {
+            lifetime_s: Some(settings.lifetime_s()),
+            check_phrase: Some(settings.check_phrase),
+            local_only: Some(settings.local_only),
+            ..GuestShare::default()
+        }),
         Call::Code(id) => GuestCommand::ShareCode(share(*id)),
         Call::Answer(id, text) => GuestCommand::AcceptAnswer(GuestAcceptAnswer {
             share: *id,
@@ -152,7 +169,8 @@ fn send(app: &App, call: &Call) {
     if let Call::Answer(_, text) | Call::AddGuest(text) = call {
         rbs_crash::add_secret(text);
     }
-    let ticket = match (command(call), app.studio.host.is_some()) {
+    let settings = guest_settings::load(&app.config).0;
+    let ticket = match (command(call, &settings), app.studio.host.is_some()) {
         (Some(c), true) => app.studio.ask_quietly(c),
         (command, host) => {
             let why = if command.is_none() {
@@ -181,6 +199,26 @@ pub(crate) fn answered(
     ticket: u64,
     result: Result<Response, ApiError>,
 ) -> Option<Result<Response, ApiError>> {
+    if SETTINGS_ASKED.get() == Some(ticket) {
+        SETTINGS_ASKED.set(None);
+        if let Ok(Response::GuestStatus(s)) = &result {
+            let lines = s
+                .data
+                .shares
+                .iter()
+                .map(|r| Line {
+                    share: r.share,
+                    state: state(r.state),
+                    text: format!(
+                        "Share {} · {}×{} · {} kbit/s",
+                        r.share, r.width, r.height, r.bitrate_kbps
+                    ),
+                })
+                .collect();
+            SHARES.with(|l| *l.borrow_mut() = lines);
+        }
+        return None;
+    }
     let call = PENDING.with(|p| {
         let mut p = p.borrow_mut();
         let at = p.iter().position(|(t, _)| *t == ticket)?;
@@ -336,4 +374,114 @@ fn install(w: &GuestWindow, ctx: &Ctx) {
             entry::guard(|| c.update(close));
         });
     }
+}
+
+// ---- Settings › Guests --------------------------------------------------------
+
+/// The Settings page's callbacks (the page is `ui/guests.slint`).
+pub(crate) fn install_settings(w: &SettingsWindow, ctx: &Ctx) {
+    macro_rules! on {
+        ($name:ident, |$app:ident| $body:block) => {{
+            let ctx = ctx.clone();
+            w.$name(move || {
+                entry::guard(|| {
+                    ctx.update(move |$app: &mut App| $body);
+                });
+            });
+        }};
+    }
+    on!(on_guest_shown, |app| {
+        let (settings, note) = guest_settings::load(&app.config);
+        if let Some(note) = note {
+            app.show_error(crate::UiError::Other(note));
+        }
+        if let Some(w) = &app.settings {
+            w.set_guest_check_phrase(settings.check_phrase);
+            w.set_guest_lifetime(settings.lifetime_index() as i32);
+            w.set_guest_local_only(settings.local_only);
+            let labels: Vec<SharedString> = guest_settings::lifetime_labels()
+                .into_iter()
+                .map(Into::into)
+                .collect();
+            w.set_guest_lifetimes(ModelRc::new(VecModel::from(labels)));
+            w.set_guest_add_text("Adding a guest needs a later version of RBS.".into());
+        }
+    });
+    on!(on_guest_settings_changed, |app| {
+        let Some(w) = &app.settings else { return };
+        let settings = GuestSettings {
+            check_phrase: w.get_guest_check_phrase(),
+            lifetime_min: usize::try_from(w.get_guest_lifetime())
+                .ok()
+                .and_then(|i| guest_settings::LIFETIMES.get(i))
+                .copied()
+                .unwrap_or(GuestSettings::default().lifetime_min),
+            local_only: w.get_guest_local_only(),
+            ..GuestSettings::default()
+        };
+        if let Err(e) = guest_settings::save(&app.config, &settings) {
+            app.show_error(crate::UiError::Other(format!("guest.toml: {e}")));
+        }
+    });
+    on!(on_guest_refresh, |app| {
+        push_shares(app);
+        if app.studio.host.is_some() && SETTINGS_ASKED.get().is_none() {
+            let ticket = app.studio.ask_quietly(Api::Guest(GuestCommand::Status));
+            SETTINGS_ASKED.set(Some(ticket));
+        }
+    });
+    {
+        let c = ctx.clone();
+        w.on_guest_open_share(move || {
+            entry::guard(|| {
+                let ctx = c.clone();
+                c.update(move |app| open(&ctx, app, true));
+            });
+        });
+    }
+    on!(on_guest_stop_share, |app| {
+        let ids: Vec<u32> = SHARES.with(|l| {
+            l.borrow()
+                .iter()
+                .filter(|l| !matches!(l.state, State::Failed | State::Closed))
+                .map(|l| l.share)
+                .collect()
+        });
+        for id in ids {
+            send(app, &Call::Stop(id));
+        }
+        // Gone at once; the next status answer says what is left.
+        SHARES.with(|l| l.borrow_mut().clear());
+        push_shares(app);
+    });
+}
+
+/// Shows the running share, if any, on the Settings page.
+fn push_shares(app: &App) {
+    let Some(w) = &app.settings else { return };
+    SHARES.with(|l| {
+        let l = l.borrow();
+        let active = l
+            .iter()
+            .find(|l| !matches!(l.state, State::Failed | State::Closed));
+        w.set_guest_sharing(active.is_some());
+        if let Some(line) = active {
+            let v = guest_view::view(
+                Flow::Share,
+                &Status {
+                    state: line.state,
+                    phrase: Vec::new(),
+                    reason: None,
+                    expires_in_s: None,
+                },
+            );
+            w.set_guest_share_text(line.text.as_str().into());
+            w.set_guest_share_state(v.badge.as_str().into());
+            w.set_guest_share_tone(match v.tone {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            });
+        }
+    });
 }

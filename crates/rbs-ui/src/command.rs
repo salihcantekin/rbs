@@ -347,7 +347,7 @@ const COMMAND: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 14] = [
+pub const SETTINGS_SECTIONS: [&str; 15] = [
     "general",
     "audio",
     "appearance",
@@ -362,6 +362,7 @@ pub const SETTINGS_SECTIONS: [&str; 14] = [
     "virtual_camera",
     "remote_control",
     "ai_tools",
+    "guests",
 ];
 
 /// A picker's choice: optional, because the bare picker id opens the list.

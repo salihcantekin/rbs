@@ -92,3 +92,24 @@ lines = 242
 reason = "ADR-0139 phase 1d: the guest window's menu commands and wiring"
 approved = "Salih, decision card in the guest UI thread, 2026-11-28"
 date = "2026-11-28"
+
+[[exception]]
+item = "crates/rbs-app/src/main.rs"
+lines = 6264
+reason = "ADR-0139 phase 1d: Settings > Guests section registration"
+approved = "Salih, decision card in the guest UI thread, 2026-11-28"
+date = "2026-11-28"
+
+[[exception]]
+item = "crates/rbs-app/src/menu_bar.rs"
+lines = 2182
+reason = "ADR-0139 phase 1d: Settings > Guests section registration"
+approved = "Salih, decision card in the guest UI thread, 2026-11-28"
+date = "2026-11-28"
+
+[[exception]]
+item = "crates/rbs-ui/src/command.rs"
+lines = 2683
+reason = "ADR-0139 phase 1d: Settings > Guests section registration"
+approved = "Salih, decision card in the guest UI thread, 2026-11-28"
+date = "2026-11-28"
