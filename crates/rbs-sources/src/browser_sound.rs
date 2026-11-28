@@ -215,6 +215,18 @@ impl BrowserSoundNode {
         }
     }
 
+    /// The same node under another sound node type id: a guest source's sound
+    /// (`guest-source.md`) is fed the same way, stamped on the master clock already.
+    pub fn with_type(mut self, type_id: &'static str) -> Self {
+        self.descriptor = NodeDescriptor::new(
+            NodeTypeId::new_static(type_id),
+            NodeKind::Source,
+            Vec::new(),
+            vec![Pin::one("audio", LinkKind::Audio)],
+        );
+        self
+    }
+
     /// Slots of the sound ring: the blocks in flight between the feed and the node
     /// (the latency) plus 2.
     pub fn ring_slots(config: &AudioGraphConfig) -> usize {

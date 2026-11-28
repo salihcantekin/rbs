@@ -515,26 +515,31 @@ impl GuestWorker {
     }
 }
 
-/// Runs `worker` on its own thread `rbs-guest-<n>` until it ends or `stop` is set.
-/// Calls `on_end` with the reason (or `None` after a stop) on that thread.
+/// What the thread reports when it stops: why (`None` after a stop) and the counts.
+pub type OnEnd = Box<dyn FnOnce(Option<GuestEnd>, GuestCounts) + Send>;
+
+/// Runs `worker` on its own thread `rbs-guest-<n>` until it ends or `stop` is set,
+/// following `shown` before each turn. Calls `on_end` on that thread at the end.
 pub fn spawn(
     n: u32,
     mut worker: GuestWorker,
     clock: Arc<dyn Clock>,
     stop: Arc<AtomicBool>,
-    on_end: Box<dyn FnOnce(Option<GuestEnd>) + Send>,
+    shown: Arc<AtomicBool>,
+    on_end: OnEnd,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name(format!("rbs-guest-{n}"))
         .spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 let now = clock.now();
+                worker.set_shown(shown.load(Ordering::Relaxed), now);
                 let Some(next) = worker.turn(now) else { break };
                 let wait = next.saturating_since(clock.now()).min(MAX_WAIT);
                 if !wait.is_zero() {
                     std::thread::sleep(wait);
                 }
             }
-            on_end(worker.ended());
+            on_end(worker.ended(), worker.counts());
         })
 }

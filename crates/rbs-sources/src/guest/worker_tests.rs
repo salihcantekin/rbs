@@ -436,7 +436,8 @@ fn the_thread_stops_on_request_and_reports_no_reason() {
         rig.worker,
         rig.clock.clone(),
         Arc::clone(&stop),
-        Box::new(move |end| {
+        Arc::new(AtomicBool::new(true)),
+        Box::new(move |end, _| {
             let _ = tx.send(end);
         }),
     )
