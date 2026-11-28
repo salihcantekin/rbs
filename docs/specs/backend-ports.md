@@ -101,6 +101,35 @@ Replacing a technology (for example FFmpeg) therefore means: add adapters, make 
 - Adapters that need their own threads create and own them, and stop them in `Drop`.
 - Port methods called from real-time threads are marked in the trait docs and must follow principle P6.
 
+## Live decoders
+
+`rbs-codec` also holds the decode traits for streams that arrive as packets (ADR-0139 decision 2). `rbs-media-decode` stays the port for files, because a file port owns demuxing and seeking that a live stream does not have. Only the audio half exists so far; `VideoDecoder` is specified with the first video decoder adapter (phase 1c).
+
+```rust
+pub trait AudioDecoderFactory: AdapterFactory {
+    fn create(&self, config: &AudioDecoderConfig) -> Result<Box<dyn AudioDecoder>, CreateError>;
+}
+
+pub trait AudioDecoder: Send {
+    fn format(&self) -> AudioFormat;
+    /// Most sample frames one call can produce; reserve `max_frames() * channels` and `decode` never allocates.
+    fn max_frames(&self) -> usize;
+    /// hot. Clears `out`, fills it with interleaved `f32`, returns the sample frames per channel.
+    fn decode(&mut self, packet: &EncodedPacket, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
+    /// hot. Concealment for a packet that never arrived.
+    fn conceal(&mut self, frames: usize, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
+    fn reset(&mut self); // cannot fail: an adapter whose state cannot be cleared recreates it
+}
+```
+
+- `AudioDecoderConfig` names the codec, the output `AudioFormat`, the codec's setup data (`extradata`, for Opus an optional `OpusHead`) and opaque `adapter_options`.
+- The caller owns timing: the decoder sees packets and lengths, never clocks. Reordering, jitter buffering and the choice between `decode` and `conceal` belong to the guest source, not to the decoder.
+- Errors are typed (`DecodeError`: `InvalidInput`, `Corrupt`, `Failed`). A corrupt packet leaves the session usable. No panic crosses the port.
+- Capability key `codec.audio.decode` (Set of codec names) next to `codec.audio.sample_rates` and `codec.audio.channels.max`.
+- Rounding: the caller rounds a concealment length to the codec's granularity (Opus: 120 sample frames); a decoder refuses other lengths with `InvalidInput`.
+- Planned additions, as provided methods so existing adapters keep compiling (found by the independent review, needed by the guest source's jitter buffer): `packet_frames(&EncodedPacket)` (frames a packet decodes to, without decoding it), and `decode_fec(next, frames, out)` with a `codec.audio.fec` capability and a new `DecodeError::Unsupported`.
+- Status: trait and `DecodeError` are in `rbs-codec`; the Opus adapter is `rbs-codec-opus`. There is no decoder conformance suite yet; the Opus tests and the RFC 8251 vectors stand in for it until a second adapter exists.
+
 ## Conformance tests
 
 Each port crate exports a conformance suite as a library function, for example `rbs_codec::conformance::video_encoder(&factory)`. An adapter crate runs it in its own tests. Suites check at least:
