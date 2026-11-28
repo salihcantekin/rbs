@@ -757,7 +757,8 @@ fn check_audio_packets(
 
 /// A short encoded clip for the decoder suite.
 ///
-/// The clip starts with a keyframe that carries SPS and PPS in band (Annex B). Every
+/// The clip is the live case of the guest source: Annex B, one access unit per packet,
+/// SPS and PPS in band in the first keyframe, no extradata. It starts with that keyframe. Every
 /// packet decodes to exactly one picture of `size`, and `packets` are in decode order
 /// with presentation order equal to decode order (no B-frames), as a live stream is.
 #[derive(Debug, Clone)]
@@ -853,6 +854,17 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         }),
     );
 
+    // Counters (ADR-0139): one count per picture, no pending keyframe after the clip.
+    let st = decoder.stats();
+    report.check(
+        "stats",
+        if st.pictures >= clip.packets.len() as u64 && !st.need_keyframe {
+            Ok(())
+        } else {
+            Err(format!("stats after the clip: {st:?}"))
+        },
+    );
+
     // A second flush emits nothing.
     let mut out = Vec::new();
     let r = guarded(|| decoder.flush(&mut out).map_err(|e| e.to_string()));
@@ -871,6 +883,9 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
     if let Some(delta) = clip.packets.iter().find(|p| !p.keyframe()) {
         let r = guarded(|| {
             decoder.reset().map_err(|e| e.to_string())?;
+            if !decoder.stats().need_keyframe {
+                return Err("stats.need_keyframe false right after reset".into());
+            }
             let after_reset = decoder.submit(delta);
             if after_reset != Err(DecodeError::NeedKeyframe) {
                 return Err(format!("after reset a delta gave {after_reset:?}"));

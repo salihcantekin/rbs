@@ -20,7 +20,10 @@ pub use config::{
     AudioEncoderConfig, EncoderChange, EncoderPreset, EncoderTuning, KeyframeInterval, RateControl,
     VideoEncoderConfig,
 };
-pub use decoder::{DecodeTarget, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory};
+pub use decoder::{
+    DEFAULT_MIN_SURFACES, DecodeTarget, DecoderStats, VideoDecoder, VideoDecoderConfig,
+    VideoDecoderFactory,
+};
 pub use encoder::{
     AudioEncoder, AudioEncoderFactory, DEFAULT_FRAMES_HELD, VideoEncoder, VideoEncoderFactory,
 };

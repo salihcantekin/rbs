@@ -52,14 +52,33 @@ impl DecodeTarget {
     }
 }
 
+/// Default of [`VideoDecoderConfig::min_surfaces`].
+pub const DEFAULT_MIN_SURFACES: usize = 3;
+
+/// Counters of one decoder session, read on a cold thread (ADR-0139). Monotonic since
+/// `create`; `reset` does not clear them.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DecoderStats {
+    /// Pictures produced.
+    pub pictures: u64,
+    /// Pictures dropped because every native surface was leased.
+    pub dropped_no_surface: u64,
+    /// Pictures copied to system memory (P4) instead of handed out natively.
+    pub cpu_copies: u64,
+    /// True while the decoder waits for a keyframe.
+    pub need_keyframe: bool,
+}
+
 /// Configuration of one live video decoder session.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct VideoDecoderConfig {
     /// The codec. Phase 1 of ADR-0139 needs `H264` only.
     pub codec: CodecId,
-    /// Framing of every packet submitted: `AnnexB` (RTP depacketizer output, parameter
-    /// sets in band) or `LengthPrefixed` (with `extradata`).
+    /// Framing of every packet submitted. The live case (the guest source) is `AnnexB`
+    /// with empty `extradata`: one access unit per packet, SPS and PPS in band.
+    /// `LengthPrefixed` needs `extradata`.
     pub bitstream: BitstreamFormat,
     /// Parameter sets for `LengthPrefixed` input (an `avcC` record). `None` for
     /// `AnnexB`, where SPS and PPS arrive in band.
@@ -71,6 +90,11 @@ pub struct VideoDecoderConfig {
     pub max_size: Size,
     /// Where pictures should live.
     pub target: DecodeTarget,
+    /// Surfaces the caller needs in flight at once (unreleased leases plus the picture
+    /// being decoded). `create` gives at least this many native surfaces, or fails with
+    /// [`CreateError::Unsupported`] or [`CreateError::ResourceExhausted`]. Ignored for
+    /// system-memory output. Default 3.
+    pub min_surfaces: usize,
 }
 
 impl VideoDecoderConfig {
@@ -82,7 +106,14 @@ impl VideoDecoderConfig {
             extradata: None,
             max_size,
             target: DecodeTarget::system(),
+            min_surfaces: DEFAULT_MIN_SURFACES,
         }
+    }
+
+    /// Sets the surfaces needed in flight (builder).
+    pub fn with_min_surfaces(mut self, n: usize) -> Self {
+        self.min_surfaces = n;
+        self
     }
 
     /// Sets the target (builder).
@@ -138,4 +169,7 @@ pub trait VideoDecoder: Send {
     fn max_surfaces(&self) -> usize {
         0
     }
+
+    /// Counters, read on a cold thread. Cheap and lock-free for the worker (atomics).
+    fn stats(&self) -> DecoderStats;
 }

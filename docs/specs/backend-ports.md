@@ -83,10 +83,11 @@ pub trait VideoDecoder: Send {
     fn reset(&mut self) -> Result<(), DecodeError>;
     fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError>;
     fn max_surfaces(&self) -> usize { 0 }
+    fn stats(&self) -> DecoderStats; // pictures, dropped_no_surface, cpu_copies, need_keyframe
 }
 ```
 
-`VideoDecoderConfig { codec, bitstream, extradata, max_size, target }`; `DecodeTarget { adapter_luid, accept }` lists the native memory kinds the caller can import and the Direct3D adapter the studio renders on.
+`VideoDecoderConfig { codec, bitstream, extradata, max_size, target, min_surfaces }`. The live case (the guest source) is `AnnexB` with empty `extradata`: one access unit per packet, SPS and PPS in band, pts already on the receiver's master clock, no B-frames. `min_surfaces` (default 3) is the number of native surfaces the caller needs in flight (its jitter buffer decodes just in time); `create` gives at least that many or fails with a typed error. `stats()` returns `DecoderStats { pictures, dropped_no_surface, cpu_copies, need_keyframe }`, monotonic, read on a cold thread, so counters do not depend on adapter logging; `DecodeTarget { adapter_luid, accept }` lists the native memory kinds the caller can import and the Direct3D adapter the studio renders on.
 
 Invariants:
 

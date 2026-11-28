@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 
 use rbs_codec::caps;
 use rbs_codec::conformance::{self, DecodeClip};
-use rbs_codec::{CreateError, DecodeError, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory};
+use rbs_codec::{
+    CreateError, DecodeError, DecoderStats, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory,
+};
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
     BitstreamFormat, Bytes, CodecId, ColorSpace, EncodedPacket, PixelFormat, PlaneLayout, Size,
@@ -49,6 +51,7 @@ impl VideoDecoderFactory for FakeFactory {
             fault: self.0,
             max: config.max_size,
             have_key: false,
+            pictures: 0,
             queue: VecDeque::new(),
             stream: StreamDescriptor::new(
                 CodecId::H264,
@@ -71,6 +74,7 @@ struct Fake {
     fault: Fault,
     max: Size,
     have_key: bool,
+    pictures: u64,
     queue: VecDeque<VideoFrame>,
     stream: StreamDescriptor,
 }
@@ -119,12 +123,19 @@ impl VideoDecoder for Fake {
         } else {
             p.pts()
         };
+        self.pictures += 1;
         self.queue.push_back(VideoFrame::system(pts, frame, None));
         Ok(())
     }
     fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
         out.extend(self.queue.drain(..));
         Ok(())
+    }
+    fn stats(&self) -> DecoderStats {
+        let mut s = DecoderStats::default();
+        s.pictures = self.pictures;
+        s.need_keyframe = !self.have_key;
+        s
     }
     fn reset(&mut self) -> Result<(), DecodeError> {
         self.queue.clear();
@@ -167,6 +178,7 @@ fn a_correct_decoder_passes() {
     report.assert_ran(&[
         "delta-before-keyframe",
         "decode-clip",
+        "stats",
         "second-flush-empty",
         "reset-then-keyframe",
         "foreign-codec",
