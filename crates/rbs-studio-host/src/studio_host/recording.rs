@@ -149,8 +149,14 @@ impl Host {
         use rbs_record::estimate as est;
         let out = self.master_settings(None, r, &r.path);
         let separate = rbs_record::IsoVideoStart::new(String::new(), r.container, video);
+        let guests = self.guest_planned();
         let mut request = rbs_record::StartPlanRequest::default();
         request.outputs = vec![rbs_record::PlannedOutput::new(&out, r.encoder.as_deref())];
+        request.outputs.extend(
+            guests
+                .iter()
+                .map(|g| rbs_record::PlannedOutput::new(g, None)),
+        );
         request.separate = Some(&separate);
         request.sound_files = sound;
         let (plan, declared) = self
@@ -664,11 +670,17 @@ impl Host {
                 }
             }
         }
+        let guests = self.guest_planned();
         let mut request = rbs_record::StartPlanRequest::default();
         request.outputs = settings
             .iter()
             .zip(&encoders)
             .map(|(s, e)| rbs_record::PlannedOutput::new(s, e.as_deref()))
+            .chain(
+                guests
+                    .iter()
+                    .map(|g| rbs_record::PlannedOutput::new(g, None)),
+            )
             .collect();
         request.separate = separate.as_ref();
         request.sound_files = sound_files;
@@ -699,7 +711,12 @@ impl Host {
                 parent.to_path_buf()
             })
         })?;
-        let request = rbs_record::StartPlanRequest::default();
+        let guests = self.guest_planned();
+        let mut request = rbs_record::StartPlanRequest::default();
+        request.outputs = guests
+            .iter()
+            .map(|g| rbs_record::PlannedOutput::new(g, None))
+            .collect();
         let (plan, declared) = self
             .studio
             .start_plan(&self.adapters, &self.collection, &request);

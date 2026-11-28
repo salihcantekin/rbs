@@ -236,6 +236,11 @@ fn a_share_goes_live_only_after_this_side_confirms_and_stop_frees_everything() {
     let share = shares.share(&mut slots, &ShareRequest::default()).unwrap();
     assert_eq!(state(&shares), ShareState::Gathering);
     assert_eq!(slots.reserved.len(), 1, "the slot is held from Share on");
+    assert_eq!(
+        shares.reserved_videos(),
+        [ShareVideo::default()],
+        "a reserved share is a planned output for the estimate"
+    );
     assert!(matches!(shares.code(share), Err(ShareRefusal::Conflict(_))));
     let stun = &script
         .lock()
@@ -297,6 +302,10 @@ fn a_share_goes_live_only_after_this_side_confirms_and_stop_frees_everything() {
         "started on its reservation"
     );
     assert_eq!(shares.drive(&mut slots, T0).1, Some(LIVE_POLL));
+    assert!(
+        shares.reserved_videos().is_empty(),
+        "a live share counts as a running output"
+    );
 
     shares.stop(&mut slots, share).unwrap();
     assert_eq!(state(&shares), ShareState::Closed);
