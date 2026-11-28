@@ -15,7 +15,9 @@ use rbs_core::timing::FrameRate;
 use rbs_peer::{AcceptSettings, InviteSettings, PeerFactory, SideSettings};
 use rbs_peer_str0m::media::Track;
 use rbs_peer_str0m::{WebRtcMedia, WebRtcPeerFactory};
-use rbs_transport::{Transport, TransportEvent, TransportItem};
+use rbs_transport::{
+    TransportConfig, TransportEvent, TransportFactory, TransportInput, TransportItem,
+};
 
 const HANG_GUARD: Duration = Duration::from_secs(30);
 
@@ -70,7 +72,7 @@ fn access_unit(i: u64) -> EncodedPacket {
 #[test]
 #[ignore = "slow: real sockets and threads"]
 fn slow_share_reaches_the_guest_source() {
-    let factory = WebRtcPeerFactory;
+    let factory = WebRtcPeerFactory::new();
     let side = SideSettings::with_stun_servers(Vec::new());
     let mut invite = factory
         .create_invite(&InviteSettings::new(side.clone()))
@@ -84,7 +86,13 @@ fn slow_share_reaches_the_guest_source() {
     let answer = host.answer_code().unwrap().expose().to_owned();
     let mut share = invite.accept_answer(&answer).unwrap();
 
-    let mut transport = WebRtcMedia::transport(&share.media()).expect("transport");
+    // Opened as the studio opens a guest share output: by its URL.
+    let url = rbs_peer_str0m::share_url(share.session_id());
+    let config = TransportConfig::new(url, TransportInput::Packets);
+    let mut transport = factory
+        .share_transports()
+        .create(&config)
+        .expect("transport");
     let mut receiver = WebRtcMedia::receiver(&host.media()).expect("receiver");
     transport.start(&descriptors()).unwrap();
     wait("connected", || {

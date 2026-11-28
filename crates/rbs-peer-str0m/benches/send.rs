@@ -32,7 +32,7 @@ fn wait(mut done: impl FnMut() -> bool) {
 }
 
 fn pair() -> (Box<dyn PeerSession>, Box<dyn PeerSession>, WebRtcTransport) {
-    let factory = WebRtcPeerFactory;
+    let factory = WebRtcPeerFactory::new();
     let side = SideSettings::with_stun_servers(Vec::new());
     let mut invite = factory
         .create_invite(&InviteSettings::new(side.clone()))

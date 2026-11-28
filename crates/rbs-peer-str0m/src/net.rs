@@ -3,6 +3,7 @@
 //! thread reads a small shared snapshot and sends commands. Created only by
 //! `create_invite` or `accept_invite` (P13); it ends with the pairing.
 
+use crate::share_transport::{GuestShareTransports, Shares};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
@@ -352,7 +353,23 @@ fn snapshot(expires_at_unix: u64) -> Shared {
 
 /// The WebRTC pairing factory (`org.rbs.peer.webrtc`).
 #[derive(Debug, Default)]
-pub struct WebRtcPeerFactory;
+pub struct WebRtcPeerFactory {
+    /// Its sharing sessions, for [`WebRtcPeerFactory::share_transports`].
+    shares: Arc<Shares>,
+}
+
+impl WebRtcPeerFactory {
+    /// A factory with no sessions.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The transport factory that opens this factory's sharing sessions as outputs
+    /// to [`share_url`](crate::share_url) (peer-port.md, "Share transport").
+    pub fn share_transports(&self) -> GuestShareTransports {
+        GuestShareTransports::new(Arc::clone(&self.shares))
+    }
+}
 
 impl PeerFactory for WebRtcPeerFactory {
     fn type_id(&self) -> &'static str {
@@ -385,6 +402,7 @@ impl PeerFactory for WebRtcPeerFactory {
             shared,
             owner: Some(owner),
             code: OnceLock::new(),
+            shares: Arc::clone(&self.shares),
         }))
     }
 
@@ -433,6 +451,7 @@ struct Invite {
     shared: Shared,
     owner: Option<Owner>,
     code: OnceLock<PairingCode>,
+    shares: Arc<Shares>,
 }
 
 impl PendingInvite for Invite {
@@ -467,6 +486,7 @@ impl PendingInvite for Invite {
         let text = answer.to_owned();
         owner.ask(|reply| Command::AcceptAnswer(text, reply))?;
         let owner = self.owner.take().ok_or(PeerError::AlreadyUsed)?;
+        self.shares.add(self.session_id, &owner.media);
         let media = owner.media.handle();
         Ok(Box::new(Session {
             session_id: self.session_id,
