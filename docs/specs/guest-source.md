@@ -66,7 +66,7 @@ pub trait PeerReceiver: Send {
 fn take_receiver(&mut self) -> Option<Box<dyn PeerReceiver>> { None }
 ```
 
-- **One receiver per session.** `take_receiver` gives `Some` once on an answering session. It gives `None` after that, and always on an offering session. The host takes the receiver and hands it to the worker, so nothing downcasts on the receive path. A conformance case checks this.
+- **One receiver per session.** `take_receiver` gives `Some` once on an answering session of an adapter that receives. It gives `None` after that, always on an offering session, and always for an adapter with no receiving half (the default), which cannot serve a guest source. The host takes the receiver and hands it to the worker, so nothing downcasts on the receive path. A conformance case checks this.
 - **Evolution.** Later `PeerReceiver` methods are provided methods, so adapters keep compiling.
 - **No arrival time in the frame.** The worker stamps each frame's arrival with its own injected clock (`rbs_core` `Clock`, `TestClock` in tests) when it polls the frame.
   - The receive ring adds at most one worker wait to the stamp. The clock map's minimum filter absorbs that, as long as some frames each second are polled while the worker is idle.
@@ -75,7 +75,7 @@ fn take_receiver(&mut self) -> Option<Box<dyn PeerReceiver>> { None }
 - **The receiver never ends the pairing.** The worker sends a reason (`guest_limits`) to the host on the source's control handle. The host calls `PeerSession::close` and shows the reason in `guest.status`.
 - **Depacketizing** (str0m's RTP reassembly and decryption) runs on the adapter's owner thread. The worker handles everything after it: every check of the bytes, the times and the parameter sets, and the decoders.
 - **Adapter.** `rbs-peer-str0m`'s `GuestReceiver` implements the trait (`confirmed` is its link state `Live`).
-  - Every frame the adapter drops before `poll` (its engine queue or its ring) is counted with its bytes in `dropped`, and the next frame is marked not contiguous.
+  - Every frame the adapter drops before `poll` in its engine queue or its ring (not its gate, which drops frames before this side is confirmed) is counted with its bytes in `dropped`. The next frame *of the same track* is marked not contiguous, one gap flag per track, and a lost video frame asks for a keyframe.
   - The owner thread publishes the link state before it hands over a turn's frames, so the worker's gate does not drop the first confirmed frames.
   - These changes touch the adapter's hot-path file (`link.rs`, `media.rs`). They need the owner's sign-off with the node (P15).
 
@@ -93,8 +93,7 @@ fn take_receiver(&mut self) -> Option<Box<dyn PeerReceiver>> { None }
 4. **Times.** Each track checks its frames against their RTP times (`guest/timing.rs`). The sender derives RTP time from the capture time, so the two must agree within 20 ms and move forward. A frame without a capture time gets one from its RTP time and the last good frame.
    - An outlier is dropped and counted. For video, it also counts as a loss (step 7, `JitterBuffer::mark_lost`).
    - 50 outliers in a row end the pairing with `guest_limits`.
-   - Once the map is valid, a frame whose mapped time is more than 1 s *after* its arrival (a capture time from the future) is an outlier too.
-   - **Late frames are not outliers.** A frame that arrives late, after a route change or a network stall, still feeds the clock map, so the map can resync. It then meets the jitter buffer's late drop, which does not count toward the 50-in-a-row rule.
+   - **Arrival never makes an outlier.** A frame that arrives late (after a route change or a stall) or early (after a large drop in delay) still feeds the clock map, so the map can follow or resync. A late frame then meets the jitter buffer's late drop; an early one waits in the jitter buffer, whose bounds (2 s, 600 frames, 12.5 MB) limit what a flood of future-stamped frames can hold. Neither counts toward the 50-in-a-row rule.
 5. **Parameter sets.** Every SPS and PPS of every access unit is parsed in safe Rust (`rbs_codec::h264`) before any decoder sees it. A refused set ends the pairing with `guest_limits`. The allowed list:
    - Constrained Baseline, Main or High;
    - level at most 5.2;
@@ -107,12 +106,12 @@ fn take_receiver(&mut self) -> Option<Box<dyn PeerReceiver>> { None }
 
    A decoded picture whose size differs from the last valid SPS's cropped size is dropped and counted, and a keyframe is requested.
 6. **Clock map** (`guest/clock_map.rs`). It maps the sender's capture time to this side's master clock, one map for picture and sound together. The map is `gap = offset + drift × (sender − at)`, refitted once per second of sender time:
-   - **Drift** is a least-squares line through the per-second minimum gaps of the last 60 completed seconds. Minimums more than 10 ms above a first fit are left out. It is bounded to ±500 ppm.
+   - **Drift** is a least-squares line through the per-second minimum gaps of the last 60 completed seconds of the current delay level. Minimums more than 10 ms above a first fit are left out. It is bounded to ±500 ppm. A median more than 5 ms from the map in use starts a new level (dated half the median's window back); the drift in use is kept until the new level has 10 seconds.
    - **Offset** is the median of the last 10 seconds' minimums, carried to now along the drift, so one far-off second does not move it.
    - **Slewing.** The map in use moves toward a new fit by at most 1 ms per second. A change above 50 ms is a resync: it is applied at once, counted and logged. So a route change does not jump the release times, and `InputAligner` keeps its own map.
    - **One correction only.** The aligner sees frames already on the master clock at a steady rate, so it does not correct the drift a second time. Its drift steering only follows its own block cadence.
    - **Validity.** The map is valid after one whole second of sender time. Until then nothing is published.
-   - **After a lasting route change**, the drift fit carries the step for up to 60 s and can be off by up to about 300 ppm. The offset still follows the median each second, so the map error stays within the drift error times the ~5 s the median looks back (about 1.5 ms). Once the window holds only the new delay, the drift is right again. A test checks both.
+   - **After a lasting route change**, the level rule keeps the step out of the drift fit. Without it, a 20 ms step tilts a 60 s least-squares line by about 500 ppm and the map by about 5 ms (measured in the test before the rule). With it, the map stays within 3 ms from the end of the slew on, and the drift is right again once the new level has 10 seconds. A test checks both.
    - The map follows offset plus the least network delay. The jitter target sits on top of that.
 7. **Jitter buffer** (`guest/jitter.rs`, one per track). A frame waits until `mapped time + target` (the `jitter_ms` setting).
    - **Sound** leaves in capture order.
@@ -188,7 +187,7 @@ One `remote` line per state change, with the source id, the state and the reason
 All tests use fakes of `PeerReceiver`, `VideoDecoder` and `AudioDecoder`, and the injected clock. No socket, no GPU.
 
 - **Rate limit.** The burst passes, then 50 Mbit/s; a sustained rate above it is refused. `dropped().bytes` growth counts toward the limit.
-- **Adapter.** A frame dropped by the engine queue or the ring is counted with its bytes, and the next frame is not contiguous.
+- **Adapter.** A frame dropped by the engine queue or the ring is counted with its bytes, the next frame of the same track (not of the other) is not contiguous, and a lost video frame asks for a keyframe (`receive_queue.rs`, unit tests without str0m).
 - **Times.**
   - A far-future, backward or unanchored capture time is an outlier, and a missing one is derived.
   - 50 outliers in a row refuse the peer.
@@ -197,8 +196,8 @@ All tests use fakes of `PeerReceiver`, `VideoDecoder` and `AudioDecoder`, and th
 - **Clock map.**
   - Within 2.5 ms of offset plus the least delay after 10 s, under 40 ms of random jitter.
   - It follows a 200 ppm drift over one simulated hour within 1 ms, under 2 ms of jitter.
-  - A 20 ms route change slews at 1 ms per second, and the map and drift are right again once the window holds only the new delay. A 2 s step is one resync.
-  - **Pipeline.** A 2 s route step and a 2 s stall, through the time checks, the map and the jitter buffer, do not end the pairing (with the worker).
+  - A 20 ms route change slews at 1 ms per second, the map stays within 3 ms from seconds 60 to 90 after it, and the map and drift are right again later. A 2 s step is one resync.
+  - **Pipeline.** A 2 s route step, a 2 s stall and a drop in delay of more than 1 s, through the time checks, the map and the jitter buffer, do not end the pairing (with the worker).
   - One far-off second does not move it.
   - Nothing is published until it is valid.
 - **Jitter buffer.**
@@ -253,7 +252,7 @@ Second independent review, 2026-11-28, given the revised draft and the branch's 
 
 - **B1.** The clock-map tests were wrong: 30 fps frames now start each second exactly, the far-off case makes a whole second late, and resync counts are exact.
 - **B2.** Only capture times from the future are outliers. Late frames feed the map and meet the jitter buffer's late drop, so a route step or a stall cannot end the pairing. A pipeline test is listed.
-- **B3.** `peer-port.md` now describes the receiver in the port. ADR-0139 decision 11 says depacketizing runs on the guest source's worker, while decision 2's threading puts it on the adapter's owner thread. This spec follows decision 2. The contradiction is an open item for the owner: fix decision 11 in place, or confirm.
+- **B3.** `peer-port.md` now describes the receiver in the port. ADR-0139 decision 11 says network I/O and depacketizing run on the guest source's worker, while decision 2's threading puts both on the adapter's owner thread. This spec follows decision 2. The contradiction is an open item for the owner: fix decision 11 in place, or confirm.
 - **B4.** The adapter counts every drop before `poll` with its bytes (`Dropped`), including the engine queue's, and marks the next frame not contiguous. The rate limit counts those bytes.
 - **Non-blocking points.**
   - The fps limit has a 10 % margin over 2 s.
@@ -268,5 +267,13 @@ Second independent review, 2026-11-28, given the revised draft and the branch's 
   - Later receiver methods are provided methods.
   - `SourceKind::Guest` is named as a new variant, and the descriptor flag's spec is named.
 - **Still open.**
-  - No adapter unit test for the engine-queue drop yet, since str0m's `MediaData` cannot be built in a test. It is covered by the conformance media tests once the node exists.
   - `ReceivedFrame::new` keeps its positional fields until a plugin adapter needs a builder.
+
+Third independent review, 2026-11-28. Verdict: changes requested; B1 and B3 resolved, B2 resolved for late frames. Changes made:
+
+- **N2.** Gap flags are per track and apply to the next frame of the same track that leaves the queue (`receive_queue.rs`, unit-tested without str0m); an engine-queue video drop asks for a keyframe.
+- **N1.** The rule that made frames from the future outliers is removed: arrival never makes an outlier, and early frames feed the map and wait in the bounded jitter buffer.
+- **N3.** `peer-port.md` no longer says the guest source downcasts the handle. The open owner item names network I/O too.
+- **N4.** The test now measured a 4.8 ms error while the drift fit carried a step. The level rule keeps the step out of the fit, and the test asserts the map stays within 3 ms over seconds 60 to 90 after the step.
+- **N5.** `None` from `take_receiver` means the adapter has no receiving half.
+- **N6.** The gate's drops are named as not part of `dropped`.

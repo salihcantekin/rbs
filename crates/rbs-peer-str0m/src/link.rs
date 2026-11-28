@@ -70,8 +70,6 @@ pub struct WebRtcMedia {
     owner_lost_video: AtomicBool,
     /// Packets the owner thread could not hand to str0m.
     owner_dropped: AtomicU64,
-    /// The guest's ring was full: its next frame is marked not contiguous.
-    receive_gap: AtomicBool,
     keyframe_wanted: AtomicBool,
     pub(crate) bytes_sent: AtomicU64,
     pub(crate) keyframe_requests: AtomicU64,
@@ -101,7 +99,6 @@ impl WebRtcMedia {
             wake_sent: AtomicBool::new(false),
             owner_lost_video: AtomicBool::new(false),
             owner_dropped: AtomicU64::new(0),
-            receive_gap: AtomicBool::new(false),
             keyframe_wanted: AtomicBool::new(false),
             bytes_sent: AtomicU64::new(0),
             keyframe_requests: AtomicU64::new(0),
@@ -426,6 +423,9 @@ pub(crate) struct OwnerSide {
     /// Reused for length-prefixed video converted to Annex B.
     scratch: Vec<u8>,
     last_requests: u64,
+    /// The guest's ring was full: the next frame of that track is marked not
+    /// contiguous.
+    gaps: crate::receive_queue::TrackGaps,
 }
 
 impl OwnerSide {
@@ -444,6 +444,7 @@ impl OwnerSide {
             own,
             scratch: Vec::new(),
             last_requests: 0,
+            gaps: crate::receive_queue::TrackGaps::default(),
         }
     }
 
@@ -498,10 +499,9 @@ impl OwnerSide {
         // frames of the turn that confirmed this side.
         self.publish_state(engine);
         while let Some(mut frame) = engine.poll_received() {
-            if self.media.receive_gap.swap(false, Ordering::AcqRel) {
-                frame.contiguous = false;
-            }
+            self.gaps.apply(&mut frame);
             let len = frame.data.len() as u64;
+            let track = frame.track;
             let pushed = self
                 .receive_tx
                 .as_mut()
@@ -513,11 +513,15 @@ impl OwnerSide {
                 self.media
                     .receive_overflow_bytes
                     .fetch_add(len, Ordering::Relaxed);
-                self.media.receive_gap.store(true, Ordering::Release);
-                if !engine.request_keyframe(now) {
+                self.gaps.lose(track);
+                if track == Track::Video && !engine.request_keyframe(now) {
                     self.media.keyframe_wanted.store(true, Ordering::Release);
                 }
             }
+        }
+        // A video frame the engine's own queue dropped asks for a keyframe too.
+        if engine.take_lost_video() && !engine.request_keyframe(now) {
+            self.media.keyframe_wanted.store(true, Ordering::Release);
         }
         let counters = engine.media_counters();
         self.media

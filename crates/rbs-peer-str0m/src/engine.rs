@@ -620,6 +620,11 @@ impl Engine {
         self.media.poll_received()
     }
 
+    /// True once after the received queue dropped a video frame.
+    pub fn take_lost_video(&mut self) -> bool {
+        self.media.take_lost_video()
+    }
+
     /// The host side asks the sharer for a keyframe.
     pub fn request_keyframe(&mut self, now: Instant) -> bool {
         let sent = self.media.request_keyframe(&mut self.rtc);
