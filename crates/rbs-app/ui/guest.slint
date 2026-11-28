@@ -89,8 +89,8 @@ component StatusBadge inherits Rectangle {
 component WordChip inherits Rectangle {
     in property <string> word;
     in property <int> number;
-    horizontal-stretch: 1;
-    preferred-width: 0px;
+    // Three to a row in the window's body, the same width in both rows.
+    width: (Tokens.size-guest-w - 2 * Tokens.space-4 - 2 * Tokens.space-2) / 3;
     height: Tokens.size-guest-word-h;
     background: Theme.accent-subtle;
     border-radius: Tokens.radius-md;
