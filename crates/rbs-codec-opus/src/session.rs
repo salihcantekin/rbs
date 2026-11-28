@@ -65,9 +65,13 @@ pub struct EncoderSession {
     filled: usize,
     packet: Vec<u8>,
     ready: Vec<EncodedPacket>,
-    /// Time of the first sample of the current timeline.
-    start: Option<Timestamp>,
-    /// Packets emitted since `start`.
+    /// Input time of the first sample of the current timeline: the continuity of later
+    /// blocks is judged against it (output-ports invariant 8).
+    in_start: Option<Timestamp>,
+    /// Output time of the first packet of the current timeline. Equals `in_start`
+    /// except after a backward jump, where it stays at the end of the previous timeline.
+    out_start: Option<Timestamp>,
+    /// Packets emitted since the timeline started.
     packets: u64,
 }
 
@@ -118,7 +122,8 @@ impl EncoderSession {
             filled: 0,
             packet: vec![0; MAX_PACKET_BYTES],
             ready: Vec::with_capacity(8),
-            start: None,
+            in_start: None,
+            out_start: None,
             packets: 0,
         })
     }
@@ -127,9 +132,9 @@ impl EncoderSession {
         self.format.sample_rate.duration_of(frames)
     }
 
-    /// Where the next sample of the current timeline belongs.
-    fn expected(&self, start: Timestamp) -> Timestamp {
-        start + self.frame_time(self.packets * self.frame as u64 + self.filled as u64)
+    /// Input time at which the next sample of the current timeline belongs.
+    fn expected(&self, in_start: Timestamp) -> Timestamp {
+        in_start + self.frame_time(self.packets * self.frame as u64 + self.filled as u64)
     }
 
     /// Pads the partial frame with silence and encodes it.
@@ -144,7 +149,10 @@ impl EncoderSession {
     }
 
     fn encode_stage(&mut self) -> Result<(), EncodeError> {
-        let start = self.start.ok_or_else(|| EncodeError::Failed {
+        // The frame is consumed whether or not libopus accepts it, so a failure never
+        // leaves the staging buffer over-full.
+        self.filled = 0;
+        let start = self.out_start.ok_or_else(|| EncodeError::Failed {
             reason: "opus frame without a start time".into(),
             recoverable: false,
         })?;
@@ -156,7 +164,6 @@ impl EncoderSession {
                 reason: format!("libopus error {code}"),
                 recoverable: false,
             })?;
-        self.filled = 0;
         self.packets += 1;
         let packet = EncodedPacket::new(
             CodecId::Opus,
@@ -178,18 +185,20 @@ impl EncoderSession {
     /// Continues the timeline or, for a gap or overlap of a codec frame or more,
     /// restarts it (output-ports invariant 8).
     fn align(&mut self, ts: Timestamp) -> Result<(), EncodeError> {
-        let Some(start) = self.start else {
-            self.start = Some(ts);
+        let (Some(in_start), Some(out_start)) = (self.in_start, self.out_start) else {
+            self.in_start = Some(ts);
+            self.out_start = Some(ts);
             return Ok(());
         };
-        let expected = self.expected(start);
+        let expected = self.expected(in_start);
         let error = ts.as_nanos().abs_diff(expected.as_nanos());
         if error < self.frame_time(self.frame as u64).as_nanos() as u64 {
             return Ok(());
         }
         self.finish_partial()?;
-        let end = start + self.frame_time(self.packets * self.frame as u64);
-        self.start = Some(ts.max(end));
+        let end = out_start + self.frame_time(self.packets * self.frame as u64);
+        self.in_start = Some(ts);
+        self.out_start = Some(ts.max(end));
         self.packets = 0;
         Ok(())
     }
@@ -228,6 +237,9 @@ impl AudioEncoder for EncoderSession {
             return Err(EncodeError::InvalidInput("format".into()));
         }
         let frames = block.frames();
+        if frames == 0 {
+            return Ok(());
+        }
         match block.samples() {
             AudioSamples::Planar(channels) => {
                 if channels.len() != self.channels || channels.iter().any(|c| c.len() != frames) {
@@ -258,12 +270,9 @@ impl AudioEncoder for EncoderSession {
     }
 
     fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError> {
-        let target = match change {
-            EncoderChange::Bitrate(RateControl::Cbr { bitrate_bps })
-            | EncoderChange::Bitrate(RateControl::Vbr {
-                target_bps: bitrate_bps,
-                ..
-            }) => *bitrate_bps,
+        let (target, vbr) = match change {
+            EncoderChange::Bitrate(RateControl::Cbr { bitrate_bps }) => (*bitrate_bps, false),
+            EncoderChange::Bitrate(RateControl::Vbr { target_bps, .. }) => (*target_bps, true),
             _ => return Err(EncodeError::Unsupported),
         };
         let max = MAX_BITRATE_PER_CHANNEL * self.channels as u64;
@@ -272,6 +281,11 @@ impl AudioEncoder for EncoderSession {
                 "bitrate {target} outside {MIN_BITRATE} to {max}"
             )));
         }
+        let failed = |code| EncodeError::Failed {
+            reason: format!("libopus error {code}"),
+            recoverable: true,
+        };
+        self.encoder.set_vbr(vbr).map_err(failed)?;
         self.encoder
             .set_bitrate(target as i32)
             .map_err(|code| EncodeError::Failed {
@@ -282,6 +296,11 @@ impl AudioEncoder for EncoderSession {
 
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
         self.finish_partial()?;
+        // A block after a flush starts a new timeline exactly at its timestamp (as the
+        // AAC adapters do).
+        self.in_start = None;
+        self.out_start = None;
+        self.packets = 0;
         self.drain(out)
     }
 }
@@ -305,10 +324,20 @@ impl DecoderSession {
                 what: format!("adapter option {key}"),
             });
         }
-        if !config.extradata.is_empty() && !config.extradata.starts_with(b"OpusHead") {
-            return Err(CreateError::InvalidConfig(
-                "opus extradata is not an OpusHead".into(),
-            ));
+        if !config.extradata.is_empty() {
+            // OpusHead: version 1, channel count, channel mapping family 0. Pre-skip and
+            // output gain are ignored for live streams.
+            let head = &config.extradata;
+            let ok = head.len() >= 19
+                && head.starts_with(b"OpusHead")
+                && head[8] == 1
+                && usize::from(head[9]) == channels
+                && head[18] == 0;
+            if !ok {
+                return Err(CreateError::InvalidConfig(
+                    "opus extradata is not an OpusHead of version 1, mapping family 0 and the session's channel count".into(),
+                ));
+            }
         }
         let decoder = ffi::Decoder::new(SAMPLE_RATE_HZ as i32, channels)
             .map_err(|c| code_error("create decoder", c))?;
@@ -362,6 +391,11 @@ impl AudioDecoder for DecoderSession {
                 "{} packet in an opus decoder",
                 packet.codec()
             )));
+        }
+        if packet.bitstream() != BitstreamFormat::Raw {
+            return Err(DecodeError::InvalidInput(
+                "opus packets must be raw (no container)".into(),
+            ));
         }
         let data = packet.data();
         let frames = ffi::packet_samples(data, SAMPLE_RATE_HZ as i32).map_err(|code| {

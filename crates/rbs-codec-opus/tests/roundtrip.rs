@@ -306,3 +306,74 @@ fn the_adapters_probe_what_they_do() {
     assert!(format!("{enc:?}").contains("opus") && format!("{dec:?}").contains("opus"));
     assert!(rbs_codec_opus::libopus_version().contains("1.5.2"));
 }
+
+#[test]
+fn a_backward_jump_restarts_once_and_later_blocks_continue() {
+    let mut enc = encoder(&[]);
+    let mut out = Vec::new();
+    let late = ORIGIN + std::time::Duration::from_secs(10);
+    for (n, base) in [(0, late), (1, late)] {
+        let _ = n;
+        for block in 0..10 {
+            let left = tone(block * 480, 480, 440.0);
+            let ts = base + SampleRate::HZ_48000.duration_of((block * 480) as u64);
+            let audio = AudioBlock::planar(AudioFormat::STEREO_48K, ts, &[&left, &left]).unwrap();
+            enc.submit(&audio).unwrap();
+        }
+    }
+    // The second run repeats the same times: a one-off overlap, then steady blocks.
+    enc.flush(&mut out).unwrap();
+    // 10 blocks = 4800 frames = 5 packets; the repeat adds 5 more, no chopping:
+    // exactly 10 packets, each exactly one frame after the previous.
+    assert_eq!(out.len(), 10);
+    for (i, p) in out.iter().enumerate() {
+        assert_eq!(
+            p.pts(),
+            late + SampleRate::HZ_48000.duration_of(i as u64 * 960)
+        );
+    }
+}
+
+#[test]
+fn a_block_after_flush_starts_a_new_timeline_at_its_own_time() {
+    let mut enc = encoder(&[]);
+    let mut out = Vec::new();
+    let left = tone(0, 960, 440.0);
+    let a = AudioBlock::planar(AudioFormat::STEREO_48K, ORIGIN, &[&left, &left]).unwrap();
+    enc.submit(&a).unwrap();
+    enc.flush(&mut out).unwrap();
+    let again = ORIGIN + std::time::Duration::from_millis(5);
+    let b = AudioBlock::planar(AudioFormat::STEREO_48K, again, &[&left, &left]).unwrap();
+    enc.submit(&b).unwrap();
+    enc.flush(&mut out).unwrap();
+    assert_eq!(out[1].pts(), again);
+}
+
+#[test]
+fn a_cbr_change_switches_off_vbr_and_extradata_is_checked() {
+    let mut enc = encoder(&[]);
+    enc.reconfigure(&EncoderChange::Bitrate(RateControl::Cbr {
+        bitrate_bps: 64_000,
+    }))
+    .unwrap();
+    let head = encoder(&[]).stream().extradata.clone();
+    let ok = AudioDecoderConfig::new(CodecId::Opus, AudioFormat::STEREO_48K)
+        .with_extradata(head.clone());
+    assert!(OpusDecoderFactory.create(&ok).is_ok());
+    let mut bad = head.to_vec();
+    bad[18] = 1; // mapping family 1
+    let cfg = AudioDecoderConfig::new(CodecId::Opus, AudioFormat::STEREO_48K)
+        .with_extradata(Bytes::from(bad));
+    assert!(matches!(
+        OpusDecoderFactory.create(&cfg),
+        Err(CreateError::InvalidConfig(_))
+    ));
+    let mut mono = head.to_vec();
+    mono[9] = 1; // one channel in the head, two in the session
+    let cfg = AudioDecoderConfig::new(CodecId::Opus, AudioFormat::STEREO_48K)
+        .with_extradata(Bytes::from(mono));
+    assert!(matches!(
+        OpusDecoderFactory.create(&cfg),
+        Err(CreateError::InvalidConfig(_))
+    ));
+}

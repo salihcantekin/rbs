@@ -150,7 +150,9 @@ impl Encoder {
         frame_size: usize,
         out: &mut [u8],
     ) -> Result<usize, OpusCode> {
-        if pcm.len() < frame_size * self.channels {
+        let needed = frame_size.checked_mul(self.channels).ok_or(-1)?;
+        let frames = c_int::try_from(frame_size).map_err(|_| -1)?;
+        if pcm.len() < needed {
             return Err(-1);
         }
         let max = i32::try_from(out.len()).unwrap_or(i32::MAX);
@@ -160,7 +162,7 @@ impl Encoder {
             opus_encode_float(
                 self.raw.as_ptr(),
                 pcm.as_ptr(),
-                frame_size as c_int,
+                frames,
                 out.as_mut_ptr(),
                 max,
             )
@@ -232,7 +234,9 @@ impl Decoder {
         pcm: &mut [f32],
         frame_size: usize,
     ) -> Result<usize, OpusCode> {
-        if pcm.len() < frame_size * self.channels {
+        let needed = frame_size.checked_mul(self.channels).ok_or(-2)?;
+        let frames = c_int::try_from(frame_size).map_err(|_| -2)?;
+        if pcm.len() < needed {
             return Err(-2);
         }
         let (data, len) = match packet {
@@ -241,16 +245,8 @@ impl Decoder {
         };
         // SAFETY: `raw` is live; `data` is null with length 0 (loss concealment) or valid
         // for `len` bytes; `pcm` holds `frame_size * channels` floats (checked above).
-        let n = unsafe {
-            opus_decode_float(
-                self.raw.as_ptr(),
-                data,
-                len,
-                pcm.as_mut_ptr(),
-                frame_size as c_int,
-                0,
-            )
-        };
+        let n =
+            unsafe { opus_decode_float(self.raw.as_ptr(), data, len, pcm.as_mut_ptr(), frames, 0) };
         usize::try_from(n).map_err(|_| n)
     }
 }

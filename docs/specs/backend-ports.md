@@ -118,7 +118,7 @@ pub trait AudioDecoder: Send {
     fn decode(&mut self, packet: &EncodedPacket, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
     /// hot. Concealment for a packet that never arrived.
     fn conceal(&mut self, frames: usize, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
-    fn reset(&mut self);
+    fn reset(&mut self); // cannot fail: an adapter whose state cannot be cleared recreates it
 }
 ```
 
@@ -126,6 +126,8 @@ pub trait AudioDecoder: Send {
 - The caller owns timing: the decoder sees packets and lengths, never clocks. Reordering, jitter buffering and the choice between `decode` and `conceal` belong to the guest source, not to the decoder.
 - Errors are typed (`DecodeError`: `InvalidInput`, `Corrupt`, `Failed`). A corrupt packet leaves the session usable. No panic crosses the port.
 - Capability key `codec.audio.decode` (Set of codec names) next to `codec.audio.sample_rates` and `codec.audio.channels.max`.
+- Rounding: the caller rounds a concealment length to the codec's granularity (Opus: 120 sample frames); a decoder refuses other lengths with `InvalidInput`.
+- Planned additions, as provided methods so existing adapters keep compiling (found by the independent review, needed by the guest source's jitter buffer): `packet_frames(&EncodedPacket)` (frames a packet decodes to, without decoding it), and `decode_fec(next, frames, out)` with a `codec.audio.fec` capability and a new `DecodeError::Unsupported`.
 - Status: trait and `DecodeError` are in `rbs-codec`; the Opus adapter is `rbs-codec-opus`. There is no decoder conformance suite yet; the Opus tests and the RFC 8251 vectors stand in for it until a second adapter exists.
 
 ## Conformance tests
