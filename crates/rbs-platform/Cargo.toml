@@ -34,6 +34,8 @@ rbs-codec-flac = { path = "../rbs-codec-flac" }
 rbs-transport-file = { path = "../rbs-transport-file" }
 rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
 rbs-transport-srt = { path = "../rbs-transport-srt" }
+rbs-peer-str0m = { path = "../rbs-peer-str0m" }
+rbs-codec-opus = { path = "../rbs-codec-opus" }
 rbs-text-parley = { path = "../rbs-text-parley" }
 rbs-media-anim = { path = "../rbs-media-anim" }
 # Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007; quality

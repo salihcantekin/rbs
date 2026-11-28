@@ -213,6 +213,11 @@
               "type": "string"
             },
             {
+              "const": "guest.changed",
+              "description": "Guest shares (state, protocol 1.116, ADR-0139); never holds a code.",
+              "type": "string"
+            },
+            {
               "const": "protection.changed",
               "description": "Recording protection: disks, lag, memory and alerts (state, protocol 1.49,\nADR-0090).",
               "type": "string"

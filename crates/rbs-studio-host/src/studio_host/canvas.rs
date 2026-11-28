@@ -358,6 +358,7 @@ impl Host {
                 let _ = rbs_crash::contain(|| self.stop_recording(c, Some(why.clone()), notify));
                 let _ = rbs_crash::contain(|| self.end_stream(c, Some(why.clone()), notify));
             }
+            let _ = rbs_crash::contain(|| self.end_guest_shares());
             for id in self.studio.outputs() {
                 let _ = rbs_crash::contain(|| self.studio.stop_output(id));
             }
@@ -373,6 +374,8 @@ impl Host {
 
     /// Starts a new studio for the collection as it is.
     pub(super) fn restart(&mut self) -> Result<(), Refusal> {
+        // A share's output and slots go with the old studio; new codes are needed.
+        self.end_guest_shares();
         let canvas = self
             .collection
             .canvas(self.canvas)

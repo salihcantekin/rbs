@@ -451,6 +451,13 @@ pub(super) fn drive_timed(
     if let Some(left) = host.report_replay(now, notify) {
         arm(wait, armed, left);
     }
+    // No share, no timer (P13).
+    if let (Some(left), changed) = host.drive_guest_shares(now) {
+        arm(wait, armed, left);
+        if changed {
+            host.guest_changed(notify);
+        }
+    }
     // One wake for the soonest timed-show deadline. An empty cue map adds nothing (ADR-0105, P13).
     if host.studio.expire_cues(now) {
         host.apply(notify);

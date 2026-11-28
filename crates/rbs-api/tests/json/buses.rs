@@ -108,5 +108,10 @@ pub(super) fn bus_requests() -> Vec<Request> {
     ]
     .into_iter()
     .map(Request::Command)
+    .chain(guest::guest_requests())
     .collect()
 }
+
+/// The guest methods (protocol 1.116), which join the bus methods in the coverage list.
+#[path = "guest.rs"]
+mod guest;

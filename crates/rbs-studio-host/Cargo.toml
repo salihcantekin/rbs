@@ -33,6 +33,7 @@ rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-params = { path = "../rbs-params" }
 rbs-capture = { path = "../rbs-capture" }
 rbs-codec = { path = "../rbs-codec" }
+rbs-peer = { path = "../rbs-peer" }
 rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
 rbs-record = { path = "../rbs-record" }

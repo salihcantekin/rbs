@@ -129,6 +129,16 @@ fn register_common(a: &mut RecordAdapters, note: &mut impl FnMut(Result<(), Dupl
         a.transports
             .register(Arc::new(rbs_transport_srt::SrtTransportFactory)),
     );
+    // Guest shares (ADR-0139): Opus sound, and the transport that opens a share's
+    // media path by its `rbs-guest://` URL. Neither opens anything until a share.
+    note(
+        a.audio_encoders
+            .register(Arc::new(rbs_codec_opus::OpusEncoderFactory)),
+    );
+    note(
+        a.transports
+            .register(Arc::new(peer_factory().share_transports())),
+    );
     // Text sources (ADR-0129): parley on the system's fonts, loaded on first use.
     a.sources
         .register_text(Arc::new(rbs_text_parley::ParleyRenderer::system()));
@@ -288,3 +298,12 @@ fn media_factories() -> Vec<Arc<dyn MediaDecoderFactory>> {
 
 #[cfg(test)]
 mod tests;
+
+/// The WebRTC pairing factory of this process (ADR-0139). One instance, so the guest
+/// share transport registered by [`adapters`] finds the sessions this factory made.
+/// Making it opens nothing: no socket or thread exists before a share.
+pub fn peer_factory() -> Arc<rbs_peer_str0m::WebRtcPeerFactory> {
+    static FACTORY: std::sync::OnceLock<Arc<rbs_peer_str0m::WebRtcPeerFactory>> =
+        std::sync::OnceLock::new();
+    Arc::clone(FACTORY.get_or_init(|| Arc::new(rbs_peer_str0m::WebRtcPeerFactory::new())))
+}

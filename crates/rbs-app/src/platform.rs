@@ -47,6 +47,9 @@ pub fn host_seams(config: &mut crate::studio_host::HostConfig) {
     config.browser = Some(std::sync::Arc::new(
         crate::browser_tree::RunnerTrees::resolved(),
     ));
+    config.peers = Some(crate::studio_host::PeerFactoryHandle(
+        rbs_platform::peer_factory(),
+    ));
 }
 
 /// The Core Graphics framebuffer and point width; it does not list screen targets.

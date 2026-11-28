@@ -72,6 +72,9 @@ pub struct HostConfig {
     /// Makes the browser tree at each start (ADR-0159 decision 4); `None`: no helper,
     /// so browser sources are Unavailable with `helper_missing`.
     pub browser: Option<Arc<dyn BrowserTrees>>,
+    /// The pairing adapter for guest shares (ADR-0139); `None`: `guest.share` is
+    /// refused as unavailable.
+    pub peers: Option<PeerFactoryHandle>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -122,6 +125,7 @@ impl HostConfig {
             calibration_setup: None,
             add_ons: None,
             browser: None,
+            peers: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
             #[cfg(feature = "fault-injection")]
