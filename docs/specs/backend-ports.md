@@ -22,7 +22,7 @@ Define how RBS talks to any external technology (OS capture, audio devices, enco
 | --- | --- | --- |
 | `rbs-capture` ([spec](capture-port.md)) | `CaptureFactory`, `CaptureSession` | Windows Graphics Capture, DXGI duplication, ScreenCaptureKit, PipeWire portal, X11, V4L2, Media Foundation, AVFoundation |
 | `rbs-audio-io` ([spec](audio-io-port.md)) | `AudioBackend`, `AudioInputStream` | WASAPI, process loopback, CoreAudio, PipeWire, ALSA, `cpal` |
-| `rbs-codec` | `VideoEncoderFactory`, `VideoEncoder`, `VideoDecoder`, `AudioEncoder` | NVENC, AMF, QSV/oneVPL, VideoToolbox, VA-API, Vulkan Video, x264, SVT-AV1, rav1e, Opus, FFmpeg |
+| `rbs-codec` | `VideoEncoderFactory`, `VideoEncoder`, `VideoDecoderFactory`, `VideoDecoder` ([live decode](#live-video-decode)), `AudioEncoder` | NVENC, AMF, QSV/oneVPL, VideoToolbox, VA-API, Vulkan Video, x264, SVT-AV1, rav1e, Opus, FFmpeg |
 | `rbs-mux` | `Muxer` | fragmented MP4, MKV, MPEG-TS, FLV, HLS/DASH segmenter |
 | `rbs-transport` | `Transport` | RTMP/RTMPS (incl. Enhanced RTMP), SRT, WHIP, file sink, virtual camera |
 
@@ -65,6 +65,45 @@ pub trait VideoEncoder: Send {
 ```
 
 These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR. Frame, block and packet types (`VideoFrame`, `AudioBlock`, `EncodedPacket`, `StreamDescriptor`, formats) come from the [media types spec](media-types.md); in the sketch above, `VideoFrameRef<'_>` is `&VideoFrame`. The encode, mux and transport contracts are fixed in [output ports](output-ports.md).
+
+## Live video decode
+
+- Status: Draft (ADR-0139 phase 1c; needs the independent review of rule 11 before adapters merge).
+- Crate: `rbs-codec` (`decoder.rs`, `DecodeError`, `conformance::video_decoder`). Adapters: `rbs-codec-videotoolbox` (macOS) and `rbs-codec-mf` (Windows) add a decoder factory beside their encoder; both register in `Registry<dyn VideoDecoderFactory>`.
+- Why a second decode port: `rbs-media-decode` ([spec](media-decode-port.md)) opens a file and owns demuxing and seeking. A live stream has neither; the caller depacketizes and submits access units.
+
+```rust
+pub trait VideoDecoderFactory: AdapterFactory {
+    fn create(&self, config: &VideoDecoderConfig) -> Result<Box<dyn VideoDecoder>, CreateError>;
+}
+pub trait VideoDecoder: Send {
+    fn stream(&self) -> &StreamDescriptor;
+    fn submit(&mut self, packet: &EncodedPacket) -> Result<(), DecodeError>;
+    fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError>;
+    fn reset(&mut self) -> Result<(), DecodeError>;
+    fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError>;
+    fn max_surfaces(&self) -> usize { 0 }
+}
+```
+
+`VideoDecoderConfig { codec, bitstream, extradata, max_size, target }`; `DecodeTarget { adapter_luid, accept }` lists the native memory kinds the caller can import and the Direct3D adapter the studio renders on.
+
+Invariants:
+
+1. **Capabilities.** `codec.video.decode` (set of codec names; phase 1 needs `h264`), `decode.output_memory` (memory kinds the adapter can hand out; `system` always works), `codec.sessions.max` (optional). `probe` never opens a device that needs more than a capability query, and a factory's constructor does nothing (P13): no thread, no session, no GPU object before `create`.
+2. **Untrusted input.** The caller has already checked every SPS and PPS against ADR-0139 decision 11. The adapter still refuses a packet it cannot frame (`InvalidInput`) and a stream whose picture exceeds `config.max_size` (`InvalidInput` for the packet that carries the SPS), and never reads outside the packet. It must not panic on any byte sequence; the fuzz targets of ADR-0139 decision 16 run against it through the port.
+3. **Keyframe gating.** Until a keyframe with parameter sets has been decoded, and after `reset`, a non-key packet is dropped and `submit` returns `NeedKeyframe`. The caller sends a PLI and keeps submitting; the error is recoverable and counted, not logged per packet.
+4. **Order and stamps.** Pictures come out in presentation order. Each picture's timestamp is the `pts` of the packet that produced it; the adapter keeps no clock and no jitter buffer. Live streams have no B-frames (ADR-0139 decision 9), so decode order equals presentation order; an adapter that reorders (a stream with B-frames) says so in its documentation and the suite skips nothing.
+5. **Latency.** No decode-order lookahead: `drain` after `submit` returns the picture of that packet when the platform decoder produces it synchronously, and the adapter asks the platform for low-latency decode (no frame reordering delay). `flush` is end of stream only.
+6. **Memory kinds.** Native output (`IoSurface` on macOS, a shared D3D11/D3D12 texture on Windows) is delivered only if `config.target` accepts the kind; otherwise system memory (NV12), counted as a CPU copy (P4). A native surface on a Direct3D adapter other than `target.adapter_luid` is never handed out (the adapter decodes on that adapter or gives system memory).
+7. **Surfaces and leases (ADR-0109 decision 8).** A native picture carries a lease. The adapter reuses the surface only after the lease is released, which the studio does after its GPU work on the picture has finished; a decoder with every surface leased drops the new picture (counted) and never allocates beyond `max_surfaces()`; it never waits for a lease. The render thread never waits on the decoder.
+8. **Reset.** `reset` drops queued packets and pictures, keeps the session and its surfaces, and waits for a keyframe. A change of picture size or format in the stream is `FormatChanged`: the caller recreates the session.
+9. **Errors.** `DecodeError` is typed with `is_recoverable()`. A decoder failure is the source's, never the engine's: the guest source goes Unavailable (ADR-0055).
+10. **Threads.** A session is driven from one worker thread at a time (never a real-time thread). Adapters that need their own threads create and stop them in `Drop`.
+
+Conformance: `rbs_codec::conformance::video_decoder(&factory, &clip)` with a `DecodeClip` (an Annex B H.264 clip that starts with a keyframe carrying SPS and PPS, one picture per packet, no B-frames). Cases: `delta-before-keyframe`, `decode-clip` (picture count, size, timestamps), `second-flush-empty`, `reset-then-keyframe`, `foreign-codec`, `max-size`. A fake decoder in `rbs-codec/tests/decoder_suite.rs` checks the suite itself. Each adapter adds its own lease and pool tests and runs the suite on its platform; a machine without the decoder skips with a reason.
+
+Out of scope here: the guest source node, depacketizing, the SPS/PPS validator and the token bucket (ADR-0139, owned by the guest source), audio decode (`rbs-codec-opus`).
 
 ## Capability model
 

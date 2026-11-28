@@ -1,4 +1,4 @@
-//! Encoder port: the contract every video and audio encoder adapter implements.
+//! Encoder and live decoder port: the contract every video and audio encoder adapter implements.
 //!
 //! Adapters (FFmpeg, NVENC, AMF, QSV, VideoToolbox, VA-API, x264, OpenH264, Opus, ...)
 //! live in their own crates, implement [`VideoEncoderFactory`] or
@@ -12,6 +12,7 @@ pub mod caps;
 pub mod config;
 #[cfg(feature = "conformance")]
 pub mod conformance;
+pub mod decoder;
 pub mod encoder;
 pub mod error;
 
@@ -19,7 +20,8 @@ pub use config::{
     AudioEncoderConfig, EncoderChange, EncoderPreset, EncoderTuning, KeyframeInterval, RateControl,
     VideoEncoderConfig,
 };
+pub use decoder::{DecodeTarget, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory};
 pub use encoder::{
     AudioEncoder, AudioEncoderFactory, DEFAULT_FRAMES_HELD, VideoEncoder, VideoEncoderFactory,
 };
-pub use error::{CreateError, EncodeError};
+pub use error::{CreateError, DecodeError, EncodeError};

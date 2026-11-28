@@ -46,3 +46,9 @@ pub const RECONFIGURE_KEYFRAME: &str = "keyframe";
 /// Values of [`VIDEO_RATE_CONTROL`], matching [`crate::RateControl::name`].
 /// A slice, so that adding a mode stays a minor change.
 pub const RATE_CONTROL_NAMES: &[&str] = &["cbr", "cbr_padded", "vbr", "constant_quality"];
+
+/// Set: video codecs the adapter decodes from live packets (`h264`).
+pub const VIDEO_DECODE: CapabilityKey = CapabilityKey::new_static("codec.video.decode");
+/// Set: memory kinds a decoder session can hand out (`MemoryKind` names; `system` is
+/// always possible).
+pub const DECODE_OUTPUT_MEMORY: CapabilityKey = CapabilityKey::new_static("decode.output_memory");

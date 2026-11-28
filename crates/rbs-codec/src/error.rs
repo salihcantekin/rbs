@@ -87,3 +87,52 @@ impl fmt::Display for EncodeError {
 }
 
 impl std::error::Error for EncodeError {}
+
+/// Why a decoder call failed.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    /// The packet does not match the session (codec, framing), is malformed, or
+    /// asks for a size above the session's limit. The packet was not decoded.
+    InvalidInput(String),
+    /// No keyframe with parameter sets has been decoded yet, or the stream was
+    /// reset. The caller requests a keyframe (PLI) and keeps submitting.
+    NeedKeyframe,
+    /// The stream's picture size or format changed. The caller recreates the session
+    /// (or `reset`s it, as the adapter documents).
+    FormatChanged,
+    /// The device was lost or reset. The session must be recreated.
+    DeviceLost,
+    /// Any other failure inside the adapter.
+    Failed {
+        /// Description for diagnostics.
+        reason: String,
+        /// Whether the session can continue.
+        recoverable: bool,
+    },
+}
+
+impl DecodeError {
+    /// True when the session can continue.
+    pub const fn is_recoverable(&self) -> bool {
+        match self {
+            DecodeError::InvalidInput(_) | DecodeError::NeedKeyframe => true,
+            DecodeError::FormatChanged | DecodeError::DeviceLost => false,
+            DecodeError::Failed { recoverable, .. } => *recoverable,
+        }
+    }
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeError::InvalidInput(e) => write!(f, "invalid input: {e}"),
+            DecodeError::NeedKeyframe => f.write_str("waiting for a keyframe"),
+            DecodeError::FormatChanged => f.write_str("stream format changed"),
+            DecodeError::DeviceLost => f.write_str("device lost"),
+            DecodeError::Failed { reason, .. } => write!(f, "decode failed: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}

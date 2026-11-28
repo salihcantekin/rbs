@@ -26,8 +26,9 @@ use crate::caps;
 use crate::config::{
     AudioEncoderConfig, EncoderChange, KeyframeInterval, RateControl, VideoEncoderConfig,
 };
+use crate::decoder::{VideoDecoderConfig, VideoDecoderFactory};
 use crate::encoder::{AudioEncoder, AudioEncoderFactory, VideoEncoder, VideoEncoderFactory};
-use crate::error::{CreateError, EncodeError};
+use crate::error::{CreateError, DecodeError, EncodeError};
 
 /// Supplies input frames for the video suite in the memory kind the adapter takes.
 ///
@@ -752,4 +753,189 @@ fn check_audio_packets(
         }
     }
     Ok(())
+}
+
+/// A short encoded clip for the decoder suite.
+///
+/// The clip starts with a keyframe that carries SPS and PPS in band (Annex B). Every
+/// packet decodes to exactly one picture of `size`, and `packets` are in decode order
+/// with presentation order equal to decode order (no B-frames), as a live stream is.
+#[derive(Debug, Clone)]
+pub struct DecodeClip {
+    /// Codec of the packets.
+    pub codec: CodecId,
+    /// Packets in decode order; the first is a keyframe.
+    pub packets: Vec<EncodedPacket>,
+    /// Picture size every packet decodes to.
+    pub size: Size,
+}
+
+/// Runs the live video decoder suite against `factory` with `clip`.
+///
+/// Checks the contract of `docs/specs/backend-ports.md` (live video decode): the adapter
+/// declares the clip's codec; one picture per packet with the packet's `pts`, the clip's
+/// size, in order; a delta packet before any keyframe is `NeedKeyframe`; `reset` waits
+/// for the next keyframe; a second `flush` emits nothing; a packet of another codec is
+/// `InvalidInput`; a picture over `max_size` is refused. Pictures are dropped between
+/// checks, which must release their leases (the adapter's own tests check the pool).
+pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Report {
+    let mut report = Report::default();
+    let Some(caps) = probe_case(&mut report, factory) else {
+        return report;
+    };
+    let names = set_values(&caps, &caps::VIDEO_DECODE);
+    if !names.iter().any(|n| n == clip.codec.as_str()) {
+        report.record(
+            "codec.video.decode",
+            Outcome::Skipped(format!("adapter does not declare {}", clip.codec)),
+        );
+        return report;
+    }
+    let config = VideoDecoderConfig::h264_annex_b(Size::new(
+        clip.size.width.max(1920),
+        clip.size.height.max(1088),
+    ));
+    let create = || guarded(|| factory.create(&config).map_err(|e| e.to_string()));
+    let mut decoder = match create() {
+        Ok(d) => d,
+        Err(e) => {
+            report.record("create", Outcome::Failed(e));
+            return report;
+        }
+    };
+    let key = clip.packets.first().cloned();
+    let Some(key) = key.filter(|p| p.keyframe()) else {
+        report.record(
+            "clip",
+            Outcome::Failed("clip must start with a keyframe".into()),
+        );
+        return report;
+    };
+
+    // A delta packet before any keyframe.
+    if let Some(delta) = clip.packets.iter().find(|p| !p.keyframe()) {
+        let r = guarded(|| Ok(decoder.submit(delta)));
+        report.check(
+            "delta-before-keyframe",
+            match r {
+                Ok(Err(DecodeError::NeedKeyframe)) => Ok(()),
+                Ok(other) => Err(format!("expected NeedKeyframe, got {other:?}")),
+                Err(e) => Err(e),
+            },
+        );
+    }
+
+    // The whole clip.
+    let run = guarded(|| decode_all(decoder.as_mut(), &clip.packets));
+    report.check(
+        "decode-clip",
+        run.and_then(|frames| {
+            if frames.len() != clip.packets.len() {
+                return Err(format!(
+                    "{} pictures for {} packets",
+                    frames.len(),
+                    clip.packets.len()
+                ));
+            }
+            for (f, p) in frames.iter().zip(&clip.packets) {
+                if f.format().size != clip.size {
+                    return Err(format!(
+                        "picture size {:?}, clip {:?}",
+                        f.format().size,
+                        clip.size
+                    ));
+                }
+                if f.timestamp() != p.pts() {
+                    return Err("picture timestamp is not the packet's pts".into());
+                }
+            }
+            Ok(())
+        }),
+    );
+
+    // A second flush emits nothing.
+    let mut out = Vec::new();
+    let r = guarded(|| decoder.flush(&mut out).map_err(|e| e.to_string()));
+    report.check(
+        "second-flush-empty",
+        r.and_then(|()| {
+            if out.is_empty() {
+                Ok(())
+            } else {
+                Err("second flush emitted pictures".into())
+            }
+        }),
+    );
+
+    // Reset waits for the next keyframe, then decodes again.
+    if let Some(delta) = clip.packets.iter().find(|p| !p.keyframe()) {
+        let r = guarded(|| {
+            decoder.reset().map_err(|e| e.to_string())?;
+            let after_reset = decoder.submit(delta);
+            if after_reset != Err(DecodeError::NeedKeyframe) {
+                return Err(format!("after reset a delta gave {after_reset:?}"));
+            }
+            let frames = decode_all(decoder.as_mut(), &clip.packets)?;
+            if frames.len() == clip.packets.len() {
+                Ok(())
+            } else {
+                Err("clip did not decode after reset".into())
+            }
+        });
+        report.check("reset-then-keyframe", r);
+    } else {
+        report.record(
+            "reset-then-keyframe",
+            Outcome::Skipped("clip has no delta packet".into()),
+        );
+    }
+
+    // Another codec is refused without poisoning the session.
+    let foreign = EncodedPacket::new(
+        CodecId::Aac,
+        BitstreamFormat::Raw,
+        key.pts(),
+        key.pts(),
+        true,
+        Bytes::from_static(&[0, 1, 2, 3]),
+    );
+    if let Ok(foreign) = foreign {
+        let r = guarded(|| Ok(decoder.submit(&foreign)));
+        report.check(
+            "foreign-codec",
+            match r {
+                Ok(Err(DecodeError::InvalidInput(_))) => Ok(()),
+                Ok(other) => Err(format!("expected InvalidInput, got {other:?}")),
+                Err(e) => Err(e),
+            },
+        );
+    }
+
+    // A picture over max_size is refused.
+    let small = VideoDecoderConfig::h264_annex_b(Size::new(
+        (clip.size.width / 2).max(2),
+        (clip.size.height / 2).max(2),
+    ));
+    let r = guarded(|| {
+        let mut d = factory.create(&small).map_err(|e| e.to_string())?;
+        match d.submit(&key) {
+            Err(DecodeError::InvalidInput(_)) => Ok(()),
+            other => Err(format!("a picture over max_size gave {other:?}")),
+        }
+    });
+    report.check("max-size", r);
+    report
+}
+
+fn decode_all(
+    decoder: &mut dyn crate::decoder::VideoDecoder,
+    packets: &[EncodedPacket],
+) -> Result<Vec<VideoFrame>, String> {
+    let mut out = Vec::new();
+    for p in packets {
+        decoder.submit(p).map_err(|e| e.to_string())?;
+        decoder.drain(&mut out).map_err(|e| e.to_string())?;
+    }
+    decoder.flush(&mut out).map_err(|e| e.to_string())?;
+    Ok(out)
 }
