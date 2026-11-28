@@ -851,9 +851,7 @@ pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Re
         decode_all(decoder.as_mut(), &clip.packets)
     });
     let frames = run.and_then(|f| check_frames(&f, clip).map(|()| f));
-    let any_native = frames
-        .as_ref()
-        .is_ok_and(|f| f.iter().any(|v| v.memory_kind() != MemoryKind::System));
+    let any_native = frames.as_ref().is_ok_and(|f| f.iter().any(|v| v.native));
     report.check("decode-clip", frames.map(|_| ()));
     let st = decoder.stats();
     report.check(
@@ -938,10 +936,12 @@ fn lookahead_case(decoder: Decoder<'_>, clip: &DecodeClip) -> Result<(), String>
     guarded(|| {
         decoder.reset().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
+        let mut seen = 0usize;
         for (i, p) in clip.packets.iter().enumerate() {
             decoder.submit(p).map_err(|e| e.to_string())?;
             decoder.drain(&mut out).map_err(|e| e.to_string())?;
-            let seen = out.len();
+            seen += out.len();
+            out.clear();
             if seen + clip.lookahead < i + 1 {
                 return Err(format!(
                     "after packet {i} only {seen} pictures (lookahead {})",
@@ -1059,7 +1059,25 @@ fn foreign_and_size_cases(
     report.check("max-size", r);
 }
 
-fn check_frames(frames: &[VideoFrame], clip: &DecodeClip) -> Result<(), String> {
+/// What the suite keeps of a picture, so the picture itself (and its lease) is released
+/// at once and a small native pool is enough for any clip length.
+struct Seen {
+    pts: rbs_core::time::Timestamp,
+    size: Size,
+    native: bool,
+}
+
+impl Seen {
+    fn of(f: &VideoFrame) -> Self {
+        Self {
+            pts: f.timestamp(),
+            size: f.format().size,
+            native: f.memory_kind() != MemoryKind::System,
+        }
+    }
+}
+
+fn check_frames(frames: &[Seen], clip: &DecodeClip) -> Result<(), String> {
     if frames.len() != clip.packets.len() {
         return Err(format!(
             "{} pictures for {} packets",
@@ -1068,17 +1086,13 @@ fn check_frames(frames: &[VideoFrame], clip: &DecodeClip) -> Result<(), String> 
         ));
     }
     for (f, p) in frames.iter().zip(&clip.packets) {
-        if f.format().size != clip.size {
-            return Err(format!(
-                "picture size {:?}, clip {:?}",
-                f.format().size,
-                clip.size
-            ));
+        if f.size != clip.size {
+            return Err(format!("picture size {:?}, clip {:?}", f.size, clip.size));
         }
-        if f.timestamp() != p.pts() {
+        if f.pts != p.pts() {
             return Err(format!(
                 "picture timestamp {:?} is not the packet's pts {:?} (bit-exact)",
-                f.timestamp(),
+                f.pts,
                 p.pts()
             ));
         }
@@ -1089,12 +1103,15 @@ fn check_frames(frames: &[VideoFrame], clip: &DecodeClip) -> Result<(), String> 
 fn decode_all(
     decoder: &mut dyn crate::decoder::VideoDecoder,
     packets: &[EncodedPacket],
-) -> Result<Vec<VideoFrame>, String> {
+) -> Result<Vec<Seen>, String> {
+    let mut seen = Vec::with_capacity(packets.len());
     let mut out = Vec::new();
     for p in packets {
         decoder.submit(p).map_err(|e| e.to_string())?;
         decoder.drain(&mut out).map_err(|e| e.to_string())?;
+        seen.extend(out.drain(..).map(|f| Seen::of(&f)));
     }
     decoder.flush(&mut out).map_err(|e| e.to_string())?;
-    Ok(out)
+    seen.extend(out.drain(..).map(|f| Seen::of(&f)));
+    Ok(seen)
 }
