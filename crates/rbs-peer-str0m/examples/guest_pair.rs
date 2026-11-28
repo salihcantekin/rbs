@@ -114,7 +114,8 @@ fn read_code(path: &Path, limit: Duration) -> String {
 
 fn wait_connected(session: &mut dyn PeerSession) {
     let start = Instant::now();
-    wait("connection", Duration::from_secs(60), || {
+    // The other side may take its code minutes later (the answer lives up to 10 min).
+    wait("connection", MAX_ANSWER_LIFETIME, || {
         while session.poll_event().is_some() {}
         match session.state() {
             PeerState::Failed(reason) => {
