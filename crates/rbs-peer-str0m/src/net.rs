@@ -560,6 +560,13 @@ impl PeerSession for Session {
         self.media.clone()
     }
 
+    fn take_receiver(&mut self) -> Option<Box<dyn rbs_peer::PeerReceiver>> {
+        if self.role != PeerRole::Answerer {
+            return None;
+        }
+        WebRtcMedia::receiver(&self.media).map(|r| Box::new(r) as Box<dyn rbs_peer::PeerReceiver>)
+    }
+
     fn close(&mut self) {
         self.owner.close();
     }

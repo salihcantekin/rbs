@@ -23,6 +23,7 @@ mod activity;
 mod browser;
 mod browser_sound;
 mod filters;
+pub mod guest;
 mod input;
 pub mod jpeg;
 mod layers;

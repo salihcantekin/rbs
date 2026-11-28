@@ -222,6 +222,11 @@ impl GuestReceiver {
         self.media.wake();
     }
 
+    /// True while both gates are open on this side.
+    pub fn confirmed(&self) -> bool {
+        self.media.state() == LinkState::Live
+    }
+
     /// True once the session failed or closed.
     pub fn ended(&self) -> bool {
         self.media.state() == LinkState::Ended

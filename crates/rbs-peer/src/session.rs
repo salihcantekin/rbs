@@ -162,6 +162,12 @@ pub trait PeerSession: Send {
     fn confirm_phrase(&mut self) -> Result<(), PeerError>;
     /// The media path. Media flows through it only while this side is confirmed.
     fn media(&self) -> MediaHandle;
+    /// The receiving half for the guest source, once: `Some` the first time on an
+    /// answering session, `None` after that and on an offering session (spec
+    /// `guest-source.md`). Provided, so existing adapters keep compiling.
+    fn take_receiver(&mut self) -> Option<Box<dyn crate::PeerReceiver>> {
+        None
+    }
     /// Ends the session and its owner thread. Idempotent.
     fn close(&mut self);
 }
