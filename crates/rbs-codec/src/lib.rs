@@ -15,13 +15,14 @@ pub mod conformance;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod h264;
 
 pub use config::{
     AudioEncoderConfig, EncoderChange, EncoderPreset, EncoderTuning, KeyframeInterval, RateControl,
     VideoEncoderConfig,
 };
 pub use decoder::{
-    DEFAULT_MIN_SURFACES, DecodeTarget, DecoderStats, VideoDecoder, VideoDecoderConfig,
+    DEFAULT_MIN_SURFACES, DecodeOutput, DecoderStats, VideoDecoder, VideoDecoderConfig,
     VideoDecoderFactory,
 };
 pub use encoder::{

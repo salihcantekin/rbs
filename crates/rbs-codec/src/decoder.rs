@@ -6,16 +6,21 @@
 //! "Live video decode".
 
 use rbs_core::media::{
-    BitstreamFormat, Bytes, CodecId, EncodedPacket, MemoryKind, Size, StreamDescriptor, VideoFrame,
+    BitstreamFormat, Bytes, CodecId, EncodedPacket, MemoryKind, Size, VideoFormat, VideoFrame,
 };
 use rbs_core::registry::AdapterFactory;
 
 use crate::error::{CreateError, DecodeError};
 
-/// Where the decoder should put its pictures.
+/// Where the decoder should put its pictures. (Not `rbs_media_decode::DecodeTarget`, the
+/// file port's type; the two have different fields.)
+///
+/// `adapter_luid: None` on Windows means system memory only. Native kinds are named per
+/// platform by the spec: `MemoryKind::D3d11` means `NativeSurface::D3dSharedHandle` with
+/// `nt: true` (never a raw texture pointer), `MemoryKind::Metal` means `IoSurface`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DecodeTarget {
+pub struct DecodeOutput {
     /// LUID of the GPU adapter the studio renders on (Direct3D). A decoder whose
     /// surfaces must live on that adapter decodes there, or hands out system memory;
     /// it never hands out a native surface on another adapter.
@@ -25,7 +30,7 @@ pub struct DecodeTarget {
     pub accept: [Option<MemoryKind>; 3],
 }
 
-impl DecodeTarget {
+impl DecodeOutput {
     /// System memory only.
     pub const fn system() -> Self {
         Self {
@@ -34,9 +39,11 @@ impl DecodeTarget {
         }
     }
 
-    /// Accepts `kind` first (builder).
-    pub const fn with_native(mut self, kind: MemoryKind) -> Self {
-        self.accept[0] = Some(kind);
+    /// Accepts `kind` as the next preference (builder); at most three are kept.
+    pub fn accepting(mut self, kind: MemoryKind) -> Self {
+        if let Some(slot) = self.accept.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(kind);
+        }
         self
     }
 
@@ -83,13 +90,14 @@ pub struct VideoDecoderConfig {
     /// Parameter sets for `LengthPrefixed` input (an `avcC` record). `None` for
     /// `AnnexB`, where SPS and PPS arrive in band.
     pub extradata: Option<Bytes>,
-    /// Largest picture the caller allows; an SPS above it is refused with
-    /// [`DecodeError::InvalidInput`] before the platform decoder sees it. The caller
-    /// has already validated the SPS (ADR-0139 decision 11); this is the adapter's
-    /// second line, not the first.
+    /// Largest picture the caller allows, compared with the *cropped* (display) size
+    /// (a 1080p stream is coded at 1088 lines). A parameter set above it is refused with
+    /// [`DecodeError::InvalidInput`] before the platform decoder sees it, using the
+    /// shared parser in [`crate::h264`]. The caller has validated the SPS too (ADR-0139
+    /// decision 11); this is the adapter's second line.
     pub max_size: Size,
     /// Where pictures should live.
-    pub target: DecodeTarget,
+    pub target: DecodeOutput,
     /// Surfaces the caller needs in flight at once (unreleased leases plus the picture
     /// being decoded). `create` gives at least this many native surfaces, or fails with
     /// [`CreateError::Unsupported`] or [`CreateError::ResourceExhausted`]. Ignored for
@@ -105,9 +113,16 @@ impl VideoDecoderConfig {
             bitstream: BitstreamFormat::AnnexB,
             extradata: None,
             max_size,
-            target: DecodeTarget::system(),
+            target: DecodeOutput::system(),
             min_surfaces: DEFAULT_MIN_SURFACES,
         }
+    }
+
+    /// Uses length-prefixed input with the `avcC` record in `extradata` (builder).
+    pub fn length_prefixed(mut self, length_size: u8, extradata: Bytes) -> Self {
+        self.bitstream = BitstreamFormat::LengthPrefixed { length_size };
+        self.extradata = Some(extradata);
+        self
     }
 
     /// Sets the surfaces needed in flight (builder).
@@ -117,7 +132,7 @@ impl VideoDecoderConfig {
     }
 
     /// Sets the target (builder).
-    pub fn with_target(mut self, target: DecodeTarget) -> Self {
+    pub fn with_target(mut self, target: DecodeOutput) -> Self {
         self.target = target;
         self
     }
@@ -138,14 +153,21 @@ pub trait VideoDecoderFactory: AdapterFactory {
 /// Pictures come out in presentation order with the `pts` of the packet that produced
 /// them; the adapter keeps no clock and no jitter buffer.
 pub trait VideoDecoder: Send {
-    /// What the session decodes. `StreamParams::Video` carries the size once known;
-    /// before the first parameter sets it holds `config.max_size`.
-    fn stream(&self) -> &StreamDescriptor;
+    /// The picture format once known (cropped size, NV12 or the native layout, colour
+    /// from the VUI, BT.709 limited when absent); `None` before the first parameter
+    /// sets. Updated when the adapter follows an in-band SPS change.
+    fn output_format(&self) -> Option<VideoFormat>;
 
-    /// Submits one access unit. Never blocks longer than one frame interval. A packet
-    /// of another codec or framing is [`DecodeError::InvalidInput`]. Until a keyframe
-    /// with parameter sets has been decoded, a non-key packet is dropped and the call
-    /// returns [`DecodeError::NeedKeyframe`] (the caller sends a PLI).
+    /// Submits one access unit. Not blocking beyond the platform call itself, and
+    /// never more than 2 ms of adapter work. A packet of another codec or framing is
+    /// [`DecodeError::InvalidInput`]. Until a keyframe with parameter sets has been
+    /// decoded (and again after `reset`, `flush` or a platform decode error), a non-key
+    /// packet is dropped and the call returns [`DecodeError::NeedKeyframe`] (the caller
+    /// sends a PLI). [`DecodeError::Busy`] means the adapter's bounded input queue is
+    /// full: `drain`, then submit the same packet again.
+    ///
+    /// The picture keeps the packet's `pts` bit-exactly (not rounded to the platform's
+    /// time unit; the adapter keeps its own FIFO keyed by submission order if needed).
     fn submit(&mut self, packet: &EncodedPacket) -> Result<(), DecodeError>;
 
     /// Moves pictures decoded so far to `out`, in presentation order. Does not
@@ -154,18 +176,21 @@ pub trait VideoDecoder: Send {
     /// only then (ADR-0109 decision 8).
     fn drain(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError>;
 
-    /// Drops every queued packet and picture and waits for the next keyframe. Used
-    /// after packet loss the caller cannot repair, and when the source stops being
-    /// drawn (ADR-0139 decision 12). Outstanding leases stay valid.
+    /// Drops every queued packet and picture and waits for the next keyframe. Keeps the
+    /// session and its pool. Outstanding leases stay valid. (A guest source that is not
+    /// drawn drops the whole decoder instead, so Standby holds no hardware session.)
     fn reset(&mut self) -> Result<(), DecodeError>;
 
-    /// Decodes everything submitted and moves the remaining pictures to `out`. A
+    /// Decodes everything submitted and moves the remaining pictures to `out`. Afterwards
+    /// the session is usable again and gated on a keyframe, like after `reset`. A
     /// second flush emits nothing.
     fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError>;
 
-    /// Native surfaces this session can have outstanding at once (pool size). The
-    /// caller keeps at most this many pictures unreleased; a decoder with every
-    /// surface leased drops the picture (counted) rather than allocate.
+    /// Most native surfaces this session has leased out at once; the decoder enforces
+    /// it (a new picture with every surface leased is released and counted in
+    /// `dropped_no_surface`; it never allocates beyond it and never waits). 0 if and
+    /// only if the session hands out system memory only. Adapters with native output
+    /// must override it; at most 8, so four guests stay under the importer's limit.
     fn max_surfaces(&self) -> usize {
         0
     }

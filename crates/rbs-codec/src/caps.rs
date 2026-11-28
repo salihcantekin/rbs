@@ -52,3 +52,14 @@ pub const VIDEO_DECODE: CapabilityKey = CapabilityKey::new_static("codec.video.d
 /// Set: memory kinds a decoder session can hand out (`MemoryKind` names; `system` is
 /// always possible).
 pub const DECODE_OUTPUT_MEMORY: CapabilityKey = CapabilityKey::new_static("decode.output_memory");
+/// Set: `<codec>.<profile>` names a decoder accepts (`h264.high`).
+pub const VIDEO_DECODE_PROFILES: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.profiles");
+/// IntRange: picture widths a decoder accepts.
+pub const VIDEO_DECODE_WIDTH: CapabilityKey = CapabilityKey::new_static("codec.video.decode.width");
+/// IntRange: picture heights a decoder accepts.
+pub const VIDEO_DECODE_HEIGHT: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.height");
+/// Int: highest frame rate at the largest size a decoder keeps up with.
+pub const VIDEO_DECODE_FPS_MAX: CapabilityKey =
+    CapabilityKey::new_static("codec.video.decode.fps.max");

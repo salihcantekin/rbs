@@ -12,11 +12,10 @@ use rbs_codec::{
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
     BitstreamFormat, Bytes, CodecId, ColorSpace, EncodedPacket, PixelFormat, PlaneLayout, Size,
-    StreamDescriptor, StreamParams, SystemFrame, VideoFormat, VideoFrame,
+    SystemFrame, VideoFormat, VideoFrame,
 };
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::Timestamp;
-use rbs_core::timing::FrameRate;
 
 const SIZE: Size = Size::new(64, 48);
 
@@ -26,6 +25,10 @@ enum Fault {
     DecodesBeforeKeyframe,
     WrongPts,
     IgnoresMaxSize,
+    RoundsPtsTo100ns,
+    FlushKeepsSession,
+    ResetDoesNotGate,
+    AcceptsForeignCodec,
 }
 
 struct FakeFactory(Fault);
@@ -51,21 +54,9 @@ impl VideoDecoderFactory for FakeFactory {
             fault: self.0,
             max: config.max_size,
             have_key: false,
+            have_size: false,
             pictures: 0,
             queue: VecDeque::new(),
-            stream: StreamDescriptor::new(
-                CodecId::H264,
-                BitstreamFormat::AnnexB,
-                Bytes::new(),
-                StreamParams::video(
-                    VideoFormat::new(
-                        config.max_size,
-                        PixelFormat::Nv12,
-                        ColorSpace::BT709_LIMITED,
-                    ),
-                    FrameRate::FPS_30,
-                ),
-            ),
         }))
     }
 }
@@ -74,22 +65,26 @@ struct Fake {
     fault: Fault,
     max: Size,
     have_key: bool,
+    have_size: bool,
     pictures: u64,
     queue: VecDeque<VideoFrame>,
-    stream: StreamDescriptor,
 }
 
 impl VideoDecoder for Fake {
-    fn stream(&self) -> &StreamDescriptor {
-        &self.stream
+    fn output_format(&self) -> Option<VideoFormat> {
+        self.have_size
+            .then(|| VideoFormat::new(SIZE, PixelFormat::Nv12, ColorSpace::BT709_LIMITED))
     }
     fn submit(&mut self, p: &EncodedPacket) -> Result<(), DecodeError> {
-        if p.codec() != CodecId::H264 {
+        if p.codec() != CodecId::H264 && self.fault != Fault::AcceptsForeignCodec {
             return Err(DecodeError::InvalidInput("codec".into()));
         }
         if p.keyframe() {
             // The fake bitstream: width and height as two big-endian u16.
             let d = p.data();
+            if d.len() < 4 {
+                return Err(DecodeError::InvalidInput("short".into()));
+            }
             let (w, h) = (
                 u32::from(d[0]) << 8 | u32::from(d[1]),
                 u32::from(d[2]) << 8 | u32::from(d[3]),
@@ -98,6 +93,7 @@ impl VideoDecoder for Fake {
                 return Err(DecodeError::InvalidInput("too large".into()));
             }
             self.have_key = true;
+            self.have_size = true;
         } else if !self.have_key && self.fault != Fault::DecodesBeforeKeyframe {
             return Err(DecodeError::NeedKeyframe);
         }
@@ -118,10 +114,10 @@ impl VideoDecoder for Fake {
             ],
         )
         .expect("valid fake frame");
-        let pts = if self.fault == Fault::WrongPts {
-            Timestamp::from_nanos(p.pts().as_nanos() + 1)
-        } else {
-            p.pts()
+        let pts = match self.fault {
+            Fault::WrongPts => Timestamp::from_nanos(p.pts().as_nanos() + 1),
+            Fault::RoundsPtsTo100ns => Timestamp::from_nanos(p.pts().as_nanos() / 100 * 100),
+            _ => p.pts(),
         };
         self.pictures += 1;
         self.queue.push_back(VideoFrame::system(pts, frame, None));
@@ -139,11 +135,15 @@ impl VideoDecoder for Fake {
     }
     fn reset(&mut self) -> Result<(), DecodeError> {
         self.queue.clear();
-        self.have_key = false;
+        self.have_key = self.fault == Fault::ResetDoesNotGate && self.have_key;
         Ok(())
     }
     fn flush(&mut self, out: &mut Vec<VideoFrame>) -> Result<(), DecodeError> {
-        self.drain(out)
+        self.drain(out)?;
+        if self.fault != Fault::FlushKeepsSession {
+            self.have_key = false;
+        }
+        Ok(())
     }
 }
 
@@ -155,7 +155,7 @@ fn clip() -> DecodeClip {
             } else {
                 Bytes::from_static(&[9, 9, 9, 9])
             };
-            let t = Timestamp::from_nanos(1_000_000 * (i + 1));
+            let t = Timestamp::from_nanos(11_111_111 * (i + 1) + 7);
             EncodedPacket::new(CodecId::H264, BitstreamFormat::AnnexB, t, t, i == 0, data)
                 .expect("packet")
         })
@@ -164,6 +164,7 @@ fn clip() -> DecodeClip {
         codec: CodecId::H264,
         packets,
         size: SIZE,
+        lookahead: 0,
     }
 }
 
@@ -179,7 +180,12 @@ fn a_correct_decoder_passes() {
         "delta-before-keyframe",
         "decode-clip",
         "stats",
-        "second-flush-empty",
+        "output-format",
+        "max-surfaces",
+        "hostile-input",
+        "decode-after-hostile-input",
+        "no-lookahead",
+        "flush-gates-and-second-flush-empty",
         "reset-then-keyframe",
         "foreign-codec",
         "max-size",
@@ -202,4 +208,36 @@ fn a_changed_timestamp_fails() {
 fn ignoring_max_size_fails() {
     let r = conformance::video_decoder(&FakeFactory(Fault::IgnoresMaxSize), &clip());
     assert!(failed(&r).contains(&"max-size".to_string()));
+}
+
+fn assert_fails(fault: Fault, case: &str) {
+    let r = conformance::video_decoder(&FakeFactory(fault), &clip());
+    assert!(
+        failed(&r).contains(&case.to_string()),
+        "{case}: {:?}",
+        failed(&r)
+    );
+}
+
+#[test]
+fn rounding_the_timestamp_to_100ns_fails() {
+    assert_fails(Fault::RoundsPtsTo100ns, "decode-clip");
+}
+
+#[test]
+fn a_flush_that_keeps_the_session_open_fails() {
+    assert_fails(
+        Fault::FlushKeepsSession,
+        "flush-gates-and-second-flush-empty",
+    );
+}
+
+#[test]
+fn a_reset_that_does_not_gate_fails() {
+    assert_fails(Fault::ResetDoesNotGate, "reset-then-keyframe");
+}
+
+#[test]
+fn accepting_a_foreign_codec_fails() {
+    assert_fails(Fault::AcceptsForeignCodec, "foreign-codec");
 }

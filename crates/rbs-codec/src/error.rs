@@ -1,8 +1,8 @@
-//! Typed errors of the encoder port. No adapter may panic across the port boundary.
+//! Typed errors of the encoder and decoder ports. No adapter may panic across the port boundary.
 
 use std::fmt;
 
-/// Why an encoder session could not be created.
+/// Why an encoder or decoder session could not be created.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateError {
@@ -98,8 +98,16 @@ pub enum DecodeError {
     /// No keyframe with parameter sets has been decoded yet, or the stream was
     /// reset. The caller requests a keyframe (PLI) and keeps submitting.
     NeedKeyframe,
-    /// The stream's picture size or format changed. The caller recreates the session
-    /// (or `reset`s it, as the adapter documents).
+    /// The decoder's input queue is full. `drain`, then submit the same packet again.
+    Busy,
+    /// The stream passed the caller's validator but this decoder or hardware refuses it
+    /// (profile, level, size). The engine falls back to the next adapter. Not
+    /// recoverable on this session.
+    Unsupported(String),
+    /// The stream changed to a format the adapter cannot follow. Returned only from
+    /// `submit`; that packet was not decoded and pictures before it stay drainable.
+    /// The caller recreates the session. An in-band SPS change within `max_size` and
+    /// the allowed formats is handled by the adapter and is not an error.
     FormatChanged,
     /// The device was lost or reset. The session must be recreated.
     DeviceLost,
@@ -116,8 +124,10 @@ impl DecodeError {
     /// True when the session can continue.
     pub const fn is_recoverable(&self) -> bool {
         match self {
-            DecodeError::InvalidInput(_) | DecodeError::NeedKeyframe => true,
-            DecodeError::FormatChanged | DecodeError::DeviceLost => false,
+            DecodeError::InvalidInput(_) | DecodeError::NeedKeyframe | DecodeError::Busy => true,
+            DecodeError::Unsupported(_) | DecodeError::FormatChanged | DecodeError::DeviceLost => {
+                false
+            }
             DecodeError::Failed { recoverable, .. } => *recoverable,
         }
     }
@@ -128,6 +138,8 @@ impl fmt::Display for DecodeError {
         match self {
             DecodeError::InvalidInput(e) => write!(f, "invalid input: {e}"),
             DecodeError::NeedKeyframe => f.write_str("waiting for a keyframe"),
+            DecodeError::Busy => f.write_str("decoder queue full"),
+            DecodeError::Unsupported(e) => write!(f, "unsupported stream: {e}"),
             DecodeError::FormatChanged => f.write_str("stream format changed"),
             DecodeError::DeviceLost => f.write_str("device lost"),
             DecodeError::Failed { reason, .. } => write!(f, "decode failed: {reason}"),
