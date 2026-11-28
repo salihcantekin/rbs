@@ -5825,6 +5825,7 @@ dependencies = [
  "rbs-codec",
  "rbs-codec-mf",
  "rbs-core",
+ "rbs-gpu",
  "rbs-media-format",
  "windows",
 ]

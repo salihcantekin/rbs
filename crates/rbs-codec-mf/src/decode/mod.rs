@@ -26,7 +26,9 @@
 //! - An in-band SPS of another size within `max_size` is followed (the MFT's stream
 //!   change sets a new output type, pool slots are remade at the new size);
 //!   `output_format` changes when the packet with the new SPS is submitted. `submit`
-//!   never returns `FormatChanged`. A removed, reset or hung device is `DeviceLost`.
+//!   never returns `FormatChanged`. A removed, reset or hung device is `DeviceLost`;
+//!   an MFT refusal of the stream (`MF_E_UNSUPPORTED_FORMAT`, `MF_E_INVALIDMEDIATYPE`,
+//!   `E_NOTIMPL` and the like from a decode call) is `Unsupported`.
 //!
 //! The factory does nothing until `create`; `probe` creates the MFT once, without a
 //! device, and caches the answer.

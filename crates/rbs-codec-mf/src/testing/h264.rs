@@ -45,6 +45,46 @@ pub fn clip(
     first: Timestamp,
     step_ns: u64,
 ) -> Result<Vec<EncodedPacket>, String> {
+    clip_with(width, height, frames, first, step_ns, &mut paint)
+}
+
+/// A clip whose frame `i` is one flat colour, `colors[i % colors.len()]`, given as
+/// limited-range Y'CbCr bytes `(y, cb, cr)`. For colour checks after decode.
+pub fn flat_clip(
+    width: u32,
+    height: u32,
+    colors: &[(u8, u8, u8)],
+    frames: usize,
+    first: Timestamp,
+    step_ns: u64,
+) -> Result<Vec<EncodedPacket>, String> {
+    if colors.is_empty() {
+        return Err("no colours".into());
+    }
+    let mut flat = |nv12: &mut [u8], width: usize, height: usize, index: usize| {
+        let (y, cb, cr) = colors[index % colors.len()];
+        let (luma, chroma) = nv12.split_at_mut(width * height);
+        luma.fill(y);
+        for pair in chroma.chunks_exact_mut(2) {
+            pair[0] = cb;
+            pair[1] = cr;
+        }
+    };
+    clip_with(width, height, frames, first, step_ns, &mut flat)
+}
+
+/// Draws one NV12 input frame: `(frame, width, height, index)`.
+pub type Painter<'a> = dyn FnMut(&mut [u8], usize, usize, usize) + 'a;
+
+/// [`clip`] with each NV12 input frame drawn by `paint(frame, width, height, index)`.
+pub fn clip_with(
+    width: u32,
+    height: u32,
+    frames: usize,
+    first: Timestamp,
+    step_ns: u64,
+    paint: &mut Painter<'_>,
+) -> Result<Vec<EncodedPacket>, String> {
     let _runtime = Runtime::start().map_err(|e| e.to_string())?;
     ensure_mta();
     // SAFETY: plain COM activation of an in-process class; the MTA is alive.

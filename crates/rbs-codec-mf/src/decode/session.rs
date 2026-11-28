@@ -263,10 +263,10 @@ impl MfH264Decoder {
                     if e.code() == MF_E_TRANSFORM_STREAM_CHANGE
                         || e.code() == MF_E_TRANSFORM_TYPE_NOT_SET =>
                 {
-                    mft::set_nv12_output(&self.mft).map_err(|e| failed("output type", &e))?;
+                    mft::set_nv12_output(&self.mft).map_err(|e| mft::decode_failed(&e))?;
                     self.adopt_output().map_err(|e| failed("output type", &e))?;
                 }
-                Err(e) => return Err(failed("decode", &e)),
+                Err(e) => return Err(mft::decode_failed(&e)),
             }
         }
         Err(skipped("the MFT kept producing output"))
@@ -454,7 +454,7 @@ impl MfH264Decoder {
                 }
                 Err(e) if e.code() == MF_E_NOTACCEPTING && attempt == 0 => self.pull()?,
                 Err(e) if e.code() == MF_E_NOTACCEPTING => return Err(VideoDecodeError::Busy),
-                Err(e) => return Err(failed("decode", &e)),
+                Err(e) => return Err(mft::decode_failed(&e)),
             }
         }
         Err(VideoDecodeError::Busy)

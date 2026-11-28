@@ -5,6 +5,7 @@
 //! to; the MTA is kept alive by [`crate::win::ensure_mta`].
 
 use rbs_codec::VideoDecodeError;
+use windows::Win32::Foundation::E_NOTIMPL;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
 };
@@ -18,7 +19,12 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoFormat_H264,
     MFVideoFormat_NV12, MFVideoInterlace_Progressive,
 };
+use windows::Win32::Media::MediaFoundation::{
+    MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_INVALIDMEDIATYPE, MF_E_INVALIDTYPE,
+    MF_E_UNSUPPORTED_D3D_TYPE, MF_E_UNSUPPORTED_FORMAT, MF_E_UNSUPPORTED_RATE,
+};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::core::HRESULT;
 use windows::core::{GUID, Interface};
 
 /// A decode failure the session survives (keyframe gating follows).
@@ -35,6 +41,34 @@ pub(crate) fn failed(what: &str, e: &windows::core::Error) -> VideoDecodeError {
         reason: format!("{what}: {e}"),
         recoverable: true,
     }
+}
+
+/// HRESULTs with which a decoder refuses the stream itself (profile, level, size or
+/// format it cannot decode), as opposed to a bad packet.
+const REFUSALS: [HRESULT; 7] = [
+    MF_E_UNSUPPORTED_FORMAT,
+    MF_E_INVALIDMEDIATYPE,
+    MF_E_INVALIDTYPE,
+    MF_E_UNSUPPORTED_D3D_TYPE,
+    MF_E_UNSUPPORTED_RATE,
+    MF_E_HW_MFT_FAILED_START_STREAMING,
+    E_NOTIMPL,
+];
+
+/// True when `code` says the decoder refuses the stream (see [`REFUSALS`]).
+pub(crate) fn is_refusal(code: HRESULT) -> bool {
+    REFUSALS.contains(&code)
+}
+
+/// [`failed`] for a decode call (`ProcessInput`, `ProcessOutput`): a refusal of the
+/// stream is `Unsupported`, so the engine falls back to the next adapter.
+pub(crate) fn decode_failed(e: &windows::core::Error) -> VideoDecodeError {
+    if is_refusal(e.code()) {
+        return VideoDecodeError::Unsupported(format!(
+            "the H.264 decoder MFT refused the stream: {e}"
+        ));
+    }
+    failed("decode", e)
 }
 
 /// A new instance of the decoder MFT.
@@ -213,4 +247,34 @@ pub(crate) fn input_sample(
 pub(crate) fn flush(mft: &IMFTransform) -> windows::core::Result<()> {
     // SAFETY: a plain message to the live MFT.
     unsafe { mft.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::E_FAIL;
+    use windows::Win32::Media::MediaFoundation::MF_E_TRANSFORM_NEED_MORE_INPUT;
+
+    #[test]
+    fn stream_refusals_are_unsupported_and_other_failures_are_not() {
+        let err = |code: HRESULT| windows::core::Error::from_hresult(code);
+        for code in REFUSALS {
+            assert!(matches!(
+                decode_failed(&err(code)),
+                VideoDecodeError::Unsupported(_)
+            ));
+        }
+        assert!(matches!(
+            decode_failed(&err(E_FAIL)),
+            VideoDecodeError::Failed {
+                recoverable: true,
+                ..
+            }
+        ));
+        assert!(!is_refusal(MF_E_TRANSFORM_NEED_MORE_INPUT));
+        assert_eq!(
+            decode_failed(&err(DXGI_ERROR_DEVICE_REMOVED)),
+            VideoDecodeError::DeviceLost
+        );
+    }
 }

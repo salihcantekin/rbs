@@ -42,6 +42,11 @@ rbs-codec-mf = { path = ".", features = ["testing"] }
 # Micro-benchmarks for the encode path (measure-performance skill, ADR-0009).
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+# The studio side of the native pictures: the D3D12 importer and the compositor
+# (tests/studio_import.rs). A dev-dependency only; the adapter never uses it.
+rbs-gpu = { path = "../rbs-gpu" }
+
 [[example]]
 name = "decode_bench"
 required-features = ["testing"]
