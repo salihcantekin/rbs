@@ -1,24 +1,38 @@
 //! The guest window (ADR-0139 phase 1d): Share (this RBS sends its program) and Add
 //! guest (this RBS receives one). The pages and the calls are in `rbs_app::guest_view`;
-//! this file owns the window, pushes the view into it and polls the pairing's state.
+//! this file owns the window, sends the session's calls to the studio as control-API
+//! commands (`guest.*`, protocol 1.116) and hands the answers back.
+//!
+//! A code is a secret: the one shown and the one pasted are registered with
+//! `rbs_crash::add_secret` while they live, and no call is ever printed with its text.
 
-use std::time::Duration;
+use std::cell::RefCell;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rbs_app::guest_view::{Flow, GuestApi, Session, Unavailable};
+use rbs_api::request::{GuestAcceptAnswer, GuestCommand, GuestShare, GuestShareRef, GuestState};
+use rbs_api::{ApiError, Command as Api, Response};
+use rbs_app::guest_view::{Call, CallError, Flow, Reply, Row, Session, State, words};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::ui::{GuestWindow, Theme, Tokens};
 use crate::{App, Ctx, entry, look, window_place};
 
-/// How often the open window reads the pairing's state, until the control API sends
-/// `guest.changed` to the app (the event carries the same state).
-const POLL: Duration = Duration::from_millis(500);
+thread_local! {
+    /// Calls sent and not answered yet, by ticket.
+    static PENDING: RefCell<Vec<(u64, Call)>> = const { RefCell::new(Vec::new()) };
+    /// Answers that came back, for the next pump.
+    static DONE: RefCell<Vec<(Call, Result<Response, ApiError>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How often the open window asks for the pairing's state while it is open.
+const POLL: Duration = Duration::from_millis(250);
 
 /// The open window and its session.
 pub struct GuestPage {
     pub window: GuestWindow,
     session: Session,
-    api: Box<dyn GuestApi>,
+    /// The code registered as a secret while it is shown.
+    secret: String,
 }
 
 /// Opens the window for `sharing`, or brings it forward when one is open.
@@ -51,14 +65,19 @@ pub fn open(ctx: &Ctx, app: &mut App, sharing: bool) {
         slint::CloseRequestResponse::HideWindow
     });
     install(&w, ctx);
+    PENDING.with(|p| p.borrow_mut().clear());
+    DONE.with(|d| d.borrow_mut().clear());
     let mut page = GuestPage {
         window: w,
         session: Session::new(flow),
-        // Until the `guest.*` methods exist on the studio, every call says so.
-        api: Box::new(Unavailable),
+        secret: String::new(),
     };
-    page.session.start(page.api.as_mut());
-    page.push();
+    page.session.start();
+    app.guest = Some(page);
+    pump(app);
+    let Some(page) = app.guest.as_ref() else {
+        return;
+    };
     let size = slint::LogicalSize::new(
         page.window.global::<Tokens>().get_size_guest_w(),
         page.window.get_wanted_height(),
@@ -67,42 +86,192 @@ pub fn open(ctx: &Ctx, app: &mut App, sharing: bool) {
     let _ = crate::exclude_window_from_capture(page.window.window(), app.bg.exclude_own_window);
     app.capture_applied.1 = usize::MAX;
     app.capture_retry = None;
-    app.guest = Some(page);
     schedule(ctx);
 }
 
 /// Hides the window and ends a pairing that has not gone live.
 fn close(app: &mut App) {
     if let Some(mut page) = app.guest.take() {
-        use rbs_app::guest_view::State;
-        // A running share or guest outlives the window; one still pairing does not.
+        // A running share outlives the window; one still pairing does not.
         if page.session.status().state != State::Live {
-            page.session.stop(page.api.as_mut());
+            page.session.stop();
         }
+        for call in page.session.take_calls() {
+            send(app, &call);
+        }
+        forget(&mut page.secret);
         let _ = page.window.hide();
     }
 }
 
-/// Reads the state again after [`POLL`], for as long as the window is open: a poll
-/// with no pairing, or one that ended, asks nothing.
+/// Removes a registered secret.
+fn forget(secret: &mut String) {
+    if !secret.is_empty() {
+        rbs_crash::remove_secret(secret);
+        secret.clear();
+    }
+}
+
+/// Asks the studio again after [`POLL`], for as long as the window is open: with no
+/// pairing, or one that ended, nothing is asked.
 fn schedule(ctx: &Ctx) {
     let c = ctx.clone();
     entry::single_shot(POLL, move || {
         let again = c.clone();
         c.update(move |app| {
-            let Some(page) = app.guest.as_mut() else {
+            if app.guest.is_none() {
                 return;
-            };
-            page.session.poll(page.api.as_mut());
-            page.push();
+            }
+            pump(app);
             schedule(&again);
         });
     });
 }
 
+/// The control-API command of a call.
+fn command(call: &Call) -> Option<Api> {
+    let share = |share| GuestShareRef { share };
+    Some(Api::Guest(match call {
+        Call::Share => GuestCommand::Share(GuestShare::default()),
+        Call::Code(id) => GuestCommand::ShareCode(share(*id)),
+        Call::Answer(id, text) => GuestCommand::AcceptAnswer(GuestAcceptAnswer {
+            share: *id,
+            answer: text.clone(),
+        }),
+        Call::Confirm(id) => GuestCommand::Confirm(share(*id)),
+        Call::Stop(id) => GuestCommand::Stop(share(*id)),
+        Call::Status => GuestCommand::Status,
+        // The host side comes with `guest.source.*` and the guest source.
+        Call::AddGuest(_) => return None,
+    }))
+}
+
+/// Sends a call to the studio and remembers its ticket; a call the studio cannot take
+/// is answered at once.
+fn send(app: &App, call: &Call) {
+    if let Call::Answer(_, text) | Call::AddGuest(text) = call {
+        rbs_crash::add_secret(text);
+    }
+    let ticket = match (command(call), app.studio.host.is_some()) {
+        (Some(c), true) => app.studio.ask_quietly(c),
+        (command, host) => {
+            let why = if command.is_none() {
+                "Adding a guest needs a later version of RBS."
+            } else if host {
+                "This call is not available."
+            } else {
+                "The studio is not running."
+            };
+            DONE.with(|d| {
+                d.borrow_mut().push((
+                    call.clone(),
+                    Err(ApiError::new(rbs_api::ErrorKind::Conflict, why)),
+                ))
+            });
+            return;
+        }
+    };
+    PENDING.with(|p| p.borrow_mut().push((ticket, call.clone())));
+}
+
+/// The studio's answer to a question, called with every answer the window gets
+/// (`Update::ApiAnswer`): one of this window's is kept for the next pump and `None`
+/// comes back; any other is returned.
+pub(crate) fn answered(
+    ticket: u64,
+    result: Result<Response, ApiError>,
+) -> Option<Result<Response, ApiError>> {
+    let call = PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        let at = p.iter().position(|(t, _)| *t == ticket)?;
+        Some(p.remove(at).1)
+    });
+    match call {
+        Some(call) => {
+            DONE.with(|d| d.borrow_mut().push((call, result)));
+            None
+        }
+        None => Some(result),
+    }
+}
+
+fn state(s: GuestState) -> State {
+    match s {
+        GuestState::Gathering => State::Gathering,
+        GuestState::WaitingForAnswer => State::WaitingForAnswer,
+        GuestState::Connecting => State::Connecting,
+        GuestState::CheckPhrase => State::CheckPhrase,
+        GuestState::Live => State::Live,
+        GuestState::Failed => State::Failed,
+        GuestState::Closed | GuestState::Other => State::Closed,
+    }
+}
+
+/// An answer as the session reads it: the `guest_*` reason of a refusal when there is
+/// one, else its text.
+fn reply(result: Result<Response, ApiError>) -> Result<Reply, CallError> {
+    match result {
+        Err(e) => Err(CallError(
+            e.data
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(|r| r.as_str())
+                .map_or(e.message, str::to_string),
+        )),
+        Ok(Response::GuestShareStarted(s)) => Ok(Reply::Started(s.share, state(s.state))),
+        Ok(Response::GuestCode(c)) => Ok(Reply::Code(c.code)),
+        Ok(Response::GuestShareState(s)) => Ok(Reply::State(state(s.state))),
+        Ok(Response::GuestStatus(s)) => Ok(Reply::Rows(
+            s.data
+                .shares
+                .into_iter()
+                .map(|r| Row {
+                    share: r.share,
+                    state: state(r.state),
+                    phrase: r.phrase.as_deref().map(words).unwrap_or_default(),
+                    reason: r.reason,
+                    expires_at: r.expires_at,
+                })
+                .collect(),
+        )),
+        Ok(_) => Ok(Reply::Done),
+    }
+}
+
+/// Takes the answers that came back, asks what the session wants asked, and shows
+/// the result.
+fn pump(app: &mut App) {
+    let Some(mut page) = app.guest.take() else {
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    for (call, result) in DONE.with(|d| std::mem::take(&mut *d.borrow_mut())) {
+        if let Call::Answer(_, text) | Call::AddGuest(text) = &call {
+            rbs_crash::remove_secret(text);
+        }
+        page.session.answer(&call, reply(result), now);
+    }
+    page.session.tick();
+    for call in page.session.take_calls() {
+        send(app, &call);
+    }
+    page.push();
+    app.guest = Some(page);
+}
+
 impl GuestPage {
     /// Pushes what the session shows into the window.
-    fn push(&self) {
+    fn push(&mut self) {
+        // The code is a secret while it is shown (ADR-0139 decision 14).
+        if self.session.code() != self.secret {
+            forget(&mut self.secret);
+            self.secret = self.session.code().to_string();
+            if !self.secret.is_empty() {
+                rbs_crash::add_secret(&self.secret);
+            }
+        }
         let w = &self.window;
         let v = self.session.view();
         let words = &self.session.status().phrase;
@@ -140,30 +309,26 @@ fn install(w: &GuestWindow, ctx: &Ctx) {
             w.$name(move |$($arg: $ty),*| {
                 ctx.update(move |app: &mut App| {
                     if let Some($page) = app.guest.as_mut() $body
+                    pump(app);
                 })
             });
         }};
     }
     on!(on_submit, |page, text: SharedString| {
-        page.session.submit(page.api.as_mut(), text.as_str());
+        page.session.submit(text.as_str());
         page.window.set_pasted(SharedString::new());
-        page.push();
     });
     on!(on_confirm, |page| {
-        page.session.confirm(page.api.as_mut());
-        page.push();
+        page.session.confirm();
     });
     on!(on_mismatch, |page| {
-        page.session.stop(page.api.as_mut());
-        page.push();
+        page.session.stop();
     });
     on!(on_stop, |page| {
-        page.session.stop(page.api.as_mut());
-        page.push();
+        page.session.stop();
     });
     on!(on_again, |page| {
-        page.session.again(page.api.as_mut());
-        page.push();
+        page.session.again();
     });
     {
         let c = ctx.clone();

@@ -5,8 +5,10 @@
 //! - [`Flow`]: this side sends its program (Share) or receives a guest (Add guest).
 //! - [`Status`]: one share's or guest's state as `guest.status` reports it.
 //! - [`view`]: the page, texts, step marks and button states for a flow and a status.
-//! - [`GuestApi`]: the few control-API calls the window makes, behind one trait, so
-//!   the method names live in one place (the draft names may change in review).
+//! - [`Session`]: the window's state between two answers. It never calls the API: it
+//!   queues [`Call`]s (`take_calls`) and takes the answers (`answer`), so the page
+//!   sends them as control-API commands without waiting and the logic is tested
+//!   with scripted answers.
 
 /// Which flow the window runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,8 +176,15 @@ pub fn reason_text(reason: &str) -> &'static str {
             "Sharing a program that contains a guest needs a return mix, which comes later."
         }
         "guest_limits" => "No more guests or shares can run now. Stop one first.",
-        "guest_wrong_session" => "That code belongs to another invite.",
-        "guest_bad_code" => "That is not a guest code. Paste the whole code.",
+        "guest_code_wrong_session" => "That code belongs to another invite.",
+        "guest_not_a_code" => "That is not a guest code. Paste the whole code.",
+        "guest_code_damaged" => "The code is damaged. Copy it again, all of it.",
+        "guest_code_newer" => "This code is from a newer RBS. Update this RBS.",
+        "guest_code_transport" => "This code uses a connection type this RBS does not have.",
+        "guest_code_wrong_kind" => {
+            "That is an invite where an answer is needed, or the other way round."
+        }
+        "guest_output_failed" => "The share could not start sending. Start again.",
         "no_encoder_slot" | "too_many_outputs" => {
             "There is no free encoder for a share now. Stop an output first."
         }
@@ -261,73 +270,102 @@ pub fn view(flow: Flow, status: &Status) -> View {
     }
 }
 
-/// An error of an API call: the `data.reason` or a short text.
+/// An error of a call: a typed `guest_*` reason, or a short text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApiError(pub String);
+pub struct CallError(pub String);
 
-/// The control-API calls of the guest window (draft: `/mnt/project-files/webrtc-guest/
-/// control-api-proposal.md`). Ids are the API's: a share id or a guest source id.
-pub trait GuestApi {
-    /// `guest.share`: starts a share; returns its id.
-    fn share(&mut self) -> Result<u64, ApiError>;
-    /// `guest.share.code` / `guest.source.answer_code`: the pending code.
-    fn code(&mut self, flow: Flow, id: u64) -> Result<String, ApiError>;
-    /// `guest.share.accept_answer`.
-    fn accept_answer(&mut self, id: u64, answer: &str) -> Result<(), ApiError>;
-    /// `guest.source.add`: adds a guest source from an invite; returns its id.
-    fn add_guest(&mut self, invite: &str) -> Result<u64, ApiError>;
-    /// `guest.share.confirm` / `guest.source.confirm`.
-    fn confirm(&mut self, flow: Flow, id: u64) -> Result<(), ApiError>;
-    /// `guest.share.stop`, or removing the guest source.
-    fn stop(&mut self, flow: Flow, id: u64) -> Result<(), ApiError>;
-    /// `guest.status` for one share or guest.
-    fn status(&mut self, flow: Flow, id: u64) -> Result<Status, ApiError>;
+/// One control-API call the window makes (protocol 1.116, `control-api.md`).
+#[derive(Clone, PartialEq, Eq)]
+pub enum Call {
+    /// `guest.share`.
+    Share,
+    /// `guest.share.code` for a share.
+    Code(u32),
+    /// `guest.share.accept_answer` for a share; the text is a secret.
+    Answer(u32, String),
+    /// `guest.share.confirm`.
+    Confirm(u32),
+    /// `guest.share.stop`.
+    Stop(u32),
+    /// `guest.status`.
+    Status,
+    /// Adding a guest source from an invite (the host side of ADR-0139; the `guest.source.*`
+    /// methods come with the guest source). The text is a secret.
+    AddGuest(String),
 }
 
-/// The API until the guest methods exist on main: every call says so.
-#[derive(Default)]
-pub struct Unavailable;
-
-const NOT_YET: &str = "Guests are not available in this build yet.";
-
-impl GuestApi for Unavailable {
-    fn share(&mut self) -> Result<u64, ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn code(&mut self, _: Flow, _: u64) -> Result<String, ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn accept_answer(&mut self, _: u64, _: &str) -> Result<(), ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn add_guest(&mut self, _: &str) -> Result<u64, ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn confirm(&mut self, _: Flow, _: u64) -> Result<(), ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn stop(&mut self, _: Flow, _: u64) -> Result<(), ApiError> {
-        Err(ApiError(NOT_YET.into()))
-    }
-    fn status(&mut self, _: Flow, _: u64) -> Result<Status, ApiError> {
-        Err(ApiError(NOT_YET.into()))
+impl std::fmt::Debug for Call {
+    /// Never prints a code.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answer(id, _) => write!(f, "Answer({id}, <secret>)"),
+            Self::AddGuest(_) => write!(f, "AddGuest(<secret>)"),
+            Self::Share => write!(f, "Share"),
+            Self::Code(id) => write!(f, "Code({id})"),
+            Self::Confirm(id) => write!(f, "Confirm({id})"),
+            Self::Stop(id) => write!(f, "Stop({id})"),
+            Self::Status => write!(f, "Status"),
+        }
     }
 }
 
-/// Whether an API error is a typed `guest_*` reason (or an encoder-slot refusal) rather
-/// than a plain message.
+/// One share of a `guest.status` answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    /// The share's id.
+    pub share: u32,
+    /// Its state.
+    pub state: State,
+    /// The six check words, once connected.
+    pub phrase: Vec<String>,
+    /// The `guest_*` reason of a failure.
+    pub reason: Option<String>,
+    /// When the invite expires, seconds since the Unix epoch.
+    pub expires_at: Option<u64>,
+}
+
+/// An answer to a [`Call`].
+#[derive(Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// `guest.share`: the new share and its state.
+    Started(u32, State),
+    /// `guest.share.code`: the code, a secret.
+    Code(String),
+    /// `guest.share.accept_answer` and `guest.share.confirm`: the state after.
+    State(State),
+    /// `guest.status`: the shares, oldest first.
+    Rows(Vec<Row>),
+    /// A call with no data back (`guest.share.stop`).
+    Done,
+}
+
+/// Splits the status's phrase into its words.
+pub fn words(phrase: &str) -> Vec<String> {
+    phrase
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether an error text is a typed `guest_*` reason (or an encoder-slot refusal)
+/// rather than a plain message.
 fn is_reason(e: &str) -> bool {
     e.starts_with("guest_") || e == "no_encoder_slot" || e == "too_many_outputs"
 }
 
-/// What the window holds between two API calls: the pairing's id, its last status,
+/// What the window holds between two answers: the pairing's id, its last status,
 /// the code shown and the problem line. The window pushes [`Session::view`].
 pub struct Session {
     flow: Flow,
-    id: Option<u64>,
+    id: Option<u32>,
     status: Status,
     code: String,
     problem: String,
+    calls: Vec<Call>,
+    asked_share: bool,
+    status_asked: bool,
+    code_asked: bool,
 }
 
 impl Session {
@@ -339,6 +377,10 @@ impl Session {
             status: Status::gathering(),
             code: String::new(),
             problem: String::new(),
+            calls: Vec::new(),
+            asked_share: false,
+            status_asked: false,
+            code_asked: false,
         }
     }
 
@@ -348,7 +390,7 @@ impl Session {
     }
 
     /// The pairing's id once it exists.
-    pub fn id(&self) -> Option<u64> {
+    pub fn id(&self) -> Option<u32> {
         self.id
     }
 
@@ -372,93 +414,66 @@ impl Session {
         view(self.flow, &self.status)
     }
 
-    /// Whether another [`poll`](Self::poll) can change anything: a pairing exists that
-    /// has not ended.
-    pub fn wants_poll(&self) -> bool {
-        self.id.is_some() && !matches!(self.status.state, State::Failed | State::Closed)
+    /// The calls to send now, in order; the queue is emptied.
+    pub fn take_calls(&mut self) -> Vec<Call> {
+        std::mem::take(&mut self.calls)
     }
 
-    fn fail(&mut self, e: ApiError) {
-        if is_reason(&e.0) {
-            self.status.state = State::Failed;
-            self.status.reason = Some(e.0);
-            self.problem.clear();
-        } else {
-            self.problem = e.0;
-        }
-    }
-
-    /// Share: asks the API to start a share. Add guest has nothing to ask yet.
-    pub fn start(&mut self, api: &mut dyn GuestApi) {
+    /// Share asks for a share once; Add guest has nothing to ask until an invite is
+    /// pasted.
+    pub fn start(&mut self) {
         self.problem.clear();
-        if self.flow == Flow::Share {
-            match api.share() {
-                Ok(id) => self.id = Some(id),
-                Err(e) => self.fail(e),
-            }
-            self.poll(api);
+        if self.flow == Flow::Share && !self.asked_share {
+            self.asked_share = true;
+            self.calls.push(Call::Share);
         }
     }
 
     /// The pasted text: Share's answer code, Add guest's invite code.
-    pub fn submit(&mut self, api: &mut dyn GuestApi, text: &str) {
+    pub fn submit(&mut self, text: &str) {
         self.problem.clear();
         let text = text.trim();
         if text.is_empty() {
             return;
         }
-        let result = match (self.flow, self.id) {
-            (Flow::Share, Some(id)) => api.accept_answer(id, text),
-            (Flow::Host, None) => api.add_guest(text).map(|id| self.id = Some(id)),
-            _ => return,
-        };
-        match result {
-            Ok(()) => self.poll(api),
-            Err(ApiError(e)) if is_reason(&e) => self.problem = reason_text(&e).into(),
-            Err(e) => self.problem = e.0,
+        match (self.flow, self.id) {
+            (Flow::Share, Some(id)) => self.calls.push(Call::Answer(id, text.to_string())),
+            (Flow::Host, None) => self.calls.push(Call::AddGuest(text.to_string())),
+            _ => {}
         }
     }
 
-    /// Reads the status, and the code once there is one to show.
-    pub fn poll(&mut self, api: &mut dyn GuestApi) {
+    /// Asks for the state (and the code once there is one to show), when no earlier
+    /// ask is still out.
+    pub fn tick(&mut self) {
         let Some(id) = self.id else { return };
-        match api.status(self.flow, id) {
-            Ok(s) => self.status = s,
-            Err(e) => return self.fail(e),
+        if matches!(self.status.state, State::Failed | State::Closed) {
+            return;
         }
-        let has_code = match self.flow {
-            Flow::Share => self.status.state == State::WaitingForAnswer,
-            Flow::Host => self.status.state == State::Connecting,
-        };
-        if has_code && self.code.is_empty() {
-            match api.code(self.flow, id) {
-                Ok(c) => self.code = c,
-                Err(e) => self.problem = e.0,
-            }
+        if !self.status_asked {
+            self.status_asked = true;
+            self.calls.push(Call::Status);
         }
-        if matches!(self.status.state, State::CheckPhrase | State::Live) {
-            self.code.clear();
+        let has_code = self.flow == Flow::Share && self.status.state == State::WaitingForAnswer;
+        if has_code && self.code.is_empty() && !self.code_asked {
+            self.code_asked = true;
+            self.calls.push(Call::Code(id));
         }
     }
 
     /// The words match.
-    pub fn confirm(&mut self, api: &mut dyn GuestApi) {
+    pub fn confirm(&mut self) {
         self.problem.clear();
         if let Some(id) = self.id {
-            match api.confirm(self.flow, id) {
-                Ok(()) => self.poll(api),
-                Err(e) => self.problem = e.0,
-            }
+            self.calls.push(Call::Confirm(id));
         }
     }
 
     /// The words differ, or the user stops a running pairing: ends it.
-    pub fn stop(&mut self, api: &mut dyn GuestApi) {
+    pub fn stop(&mut self) {
         self.problem.clear();
-        if let Some(id) = self.id.take()
-            && let Err(e) = api.stop(self.flow, id)
-        {
-            self.problem = e.0;
+        if let Some(id) = self.id.take() {
+            self.calls.push(Call::Stop(id));
         }
         self.code.clear();
         self.status = Status {
@@ -468,9 +483,78 @@ impl Session {
     }
 
     /// Start again after a failure or a stop: a fresh session of the same flow.
-    pub fn again(&mut self, api: &mut dyn GuestApi) {
+    pub fn again(&mut self) {
+        let calls = std::mem::take(&mut self.calls);
         *self = Self::new(self.flow);
-        self.start(api);
+        self.calls = calls;
+        self.start();
+    }
+
+    fn fail(&mut self, e: CallError) {
+        if is_reason(&e.0) {
+            self.status.state = State::Failed;
+            self.status.reason = Some(e.0);
+            self.problem.clear();
+        } else {
+            self.problem = e.0;
+        }
+    }
+
+    /// Takes the answer to `call`. `now` is the time in seconds since the Unix epoch,
+    /// to turn an expiry into time left.
+    pub fn answer(&mut self, call: &Call, result: Result<Reply, CallError>, now: u64) {
+        match call {
+            Call::Status => self.status_asked = false,
+            Call::Code(_) => self.code_asked = false,
+            _ => {}
+        }
+        let reply = match result {
+            Ok(r) => r,
+            // A bad answer or invite keeps the pairing as it was.
+            Err(CallError(e)) if matches!(call, Call::Answer(..) | Call::AddGuest(_)) => {
+                self.problem = if is_reason(&e) {
+                    reason_text(&e).into()
+                } else {
+                    e
+                };
+                return;
+            }
+            // A stop that fails leaves nothing to show beyond the text.
+            Err(e) if matches!(call, Call::Stop(_)) => {
+                self.problem = e.0;
+                return;
+            }
+            Err(e) => return self.fail(e),
+        };
+        match reply {
+            Reply::Started(id, state) => {
+                self.id = Some(id);
+                self.status.state = state;
+            }
+            Reply::Code(c) => self.code = c,
+            Reply::State(state) => self.status.state = state,
+            Reply::Rows(rows) => {
+                let Some(id) = self.id else { return };
+                match rows.into_iter().find(|r| r.share == id) {
+                    Some(r) => {
+                        self.status = Status {
+                            state: r.state,
+                            phrase: r.phrase,
+                            reason: r.reason,
+                            expires_in_s: r
+                                .expires_at
+                                .map(|e| u32::try_from(e.saturating_sub(now)).unwrap_or(u32::MAX)),
+                        };
+                        if matches!(r.state, State::CheckPhrase | State::Live) {
+                            self.code.clear();
+                        }
+                    }
+                    // The studio restarted: its shares are gone.
+                    None => self.status.state = State::Closed,
+                }
+            }
+            Reply::Done => {}
+        }
     }
 }
 
@@ -487,8 +571,33 @@ mod tests {
         }
     }
 
+    fn row(state: State) -> Row {
+        Row {
+            share: 7,
+            state,
+            phrase: words("amber velvet harbor quartz meadow lantern"),
+            reason: None,
+            expires_at: Some(1_000 + 462),
+        }
+    }
+
+    /// Plays the studio: answers each queued call as a scripted studio would.
+    fn serve(s: &mut Session, state: State) {
+        for call in s.take_calls() {
+            let reply = match &call {
+                Call::Share => Reply::Started(7, State::Gathering),
+                Call::Code(_) => Reply::Code("rbs-guest:1:abc".into()),
+                Call::Status => Reply::Rows(vec![row(state)]),
+                Call::Answer(..) | Call::Confirm(_) => Reply::State(state),
+                Call::AddGuest(_) => Reply::Started(3, State::Connecting),
+                Call::Stop(_) => Reply::Done,
+            };
+            s.answer(&call, Ok(reply), 1_000);
+        }
+    }
+
     #[test]
-    fn share_invite_waits_with_a_paste_box_and_a_clock() {
+    fn view_of_a_waiting_share_has_a_paste_box_and_a_clock() {
         let v = view(Flow::Share, &st(State::WaitingForAnswer));
         assert_eq!(v.page, Page::Invite);
         assert!(v.paste_enabled && v.code_ready);
@@ -547,162 +656,142 @@ mod tests {
     }
 
     #[test]
-    fn the_stub_refuses_every_call() {
-        let mut a = Unavailable;
-        assert!(a.share().is_err() && a.status(Flow::Host, 1).is_err());
-    }
-
-    #[test]
     fn clock_pads_seconds() {
         assert_eq!(clock(125), "2:05");
         assert_eq!(clock(0), "0:00");
     }
 
-    /// A scripted API: the status it reports, and a log of the calls.
-    struct Fake {
-        status: Status,
-        log: Vec<String>,
-        answer_error: Option<&'static str>,
-    }
-
-    impl Fake {
-        fn new(state: State) -> Self {
-            Self {
-                status: st(state),
-                log: Vec::new(),
-                answer_error: None,
-            }
-        }
-    }
-
-    impl GuestApi for Fake {
-        fn share(&mut self) -> Result<u64, ApiError> {
-            self.log.push("share".into());
-            Ok(7)
-        }
-        fn code(&mut self, _: Flow, id: u64) -> Result<String, ApiError> {
-            self.log.push(format!("code {id}"));
-            Ok("rbs-guest:1:abc".into())
-        }
-        fn accept_answer(&mut self, id: u64, a: &str) -> Result<(), ApiError> {
-            self.log.push(format!("answer {id} {a}"));
-            match self.answer_error {
-                Some(e) => Err(ApiError(e.into())),
-                None => Ok(()),
-            }
-        }
-        fn add_guest(&mut self, invite: &str) -> Result<u64, ApiError> {
-            self.log.push(format!("add {invite}"));
-            Ok(3)
-        }
-        fn confirm(&mut self, _: Flow, id: u64) -> Result<(), ApiError> {
-            self.log.push(format!("confirm {id}"));
-            self.status.state = State::Live;
-            Ok(())
-        }
-        fn stop(&mut self, _: Flow, id: u64) -> Result<(), ApiError> {
-            self.log.push(format!("stop {id}"));
-            Ok(())
-        }
-        fn status(&mut self, _: Flow, _: u64) -> Result<Status, ApiError> {
-            Ok(self.status.clone())
-        }
+    #[test]
+    fn the_phrase_splits_on_any_separator() {
+        assert_eq!(
+            words("amber-velvet, harbor  quartz meadow lantern").len(),
+            6
+        );
     }
 
     #[test]
-    fn a_share_fetches_its_code_once_it_waits() {
-        let mut api = Fake::new(State::WaitingForAnswer);
+    fn a_share_asks_once_then_fetches_its_code_when_it_waits() {
         let mut s = Session::new(Flow::Share);
-        s.start(&mut api);
-        s.poll(&mut api);
+        s.start();
+        s.start();
+        assert_eq!(s.take_calls(), vec![Call::Share]);
+        s.answer(&Call::Share, Ok(Reply::Started(7, State::Gathering)), 1_000);
+        s.tick();
+        assert_eq!(s.take_calls(), vec![Call::Status]);
+        s.tick();
+        assert!(s.take_calls().is_empty(), "a status ask is still out");
+        s.answer(
+            &Call::Status,
+            Ok(Reply::Rows(vec![row(State::WaitingForAnswer)])),
+            1_000,
+        );
+        s.tick();
+        assert_eq!(s.take_calls(), vec![Call::Status, Call::Code(7)]);
+        s.answer(
+            &Call::Code(7),
+            Ok(Reply::Code("rbs-guest:1:abc".into())),
+            1_000,
+        );
         assert_eq!(s.code(), "rbs-guest:1:abc");
-        assert_eq!(api.log.iter().filter(|c| c.starts_with("code")).count(), 1);
-        s.submit(&mut api, "  rbs-guest:1:answer \n");
-        assert!(api.log.contains(&"answer 7 rbs-guest:1:answer".to_string()));
+        assert_eq!(s.view().expires, "7:42");
+        s.submit("  rbs-guest:1:answer \n");
+        assert_eq!(
+            s.take_calls(),
+            vec![Call::Answer(7, "rbs-guest:1:answer".into())]
+        );
     }
 
     #[test]
     fn a_bad_answer_keeps_the_share_waiting_with_a_problem_line() {
-        let mut api = Fake::new(State::WaitingForAnswer);
-        api.answer_error = Some("guest_wrong_session");
         let mut s = Session::new(Flow::Share);
-        s.start(&mut api);
-        s.submit(&mut api, "x");
-        assert_eq!(s.problem(), "That code belongs to another invite.");
+        s.start();
+        serve(&mut s, State::WaitingForAnswer);
+        s.tick();
+        serve(&mut s, State::WaitingForAnswer);
+        s.answer(
+            &Call::Answer(7, "x".into()),
+            Err(CallError("guest_code_wrong_session".into())),
+            1_000,
+        );
         assert_eq!(s.view().page, Page::Invite);
-        assert!(s.wants_poll());
+        assert_eq!(s.problem(), "That code belongs to another invite.");
     }
 
     #[test]
     fn adding_a_guest_needs_an_invite_first() {
-        let mut api = Fake::new(State::Connecting);
         let mut s = Session::new(Flow::Host);
-        s.start(&mut api);
-        assert!(api.log.is_empty() && s.id().is_none() && !s.wants_poll());
-        s.submit(&mut api, "rbs-guest:1:invite");
+        s.start();
+        s.tick();
+        assert!(s.take_calls().is_empty() && s.id().is_none());
+        s.submit("rbs-guest:1:invite");
+        serve(&mut s, State::Connecting);
         assert_eq!(s.id(), Some(3));
-        assert_eq!(s.view().page, Page::Answer);
-        assert_eq!(s.code(), "rbs-guest:1:abc");
     }
 
     #[test]
     fn confirming_runs_and_the_code_goes_away() {
-        let mut api = Fake::new(State::CheckPhrase);
         let mut s = Session::new(Flow::Share);
-        s.start(&mut api);
+        s.start();
+        serve(&mut s, State::CheckPhrase);
+        s.tick();
+        serve(&mut s, State::CheckPhrase);
         assert_eq!(s.view().page, Page::Compare);
-        s.confirm(&mut api);
+        assert_eq!(s.status().phrase.len(), 6);
+        s.confirm();
+        assert_eq!(s.take_calls(), vec![Call::Confirm(7)]);
+        s.answer(&Call::Confirm(7), Ok(Reply::State(State::Live)), 1_000);
         assert_eq!(s.view().page, Page::Live);
         assert_eq!(s.code(), "");
     }
 
     #[test]
     fn stop_ends_the_pairing_and_again_starts_a_new_one() {
-        let mut api = Fake::new(State::Live);
         let mut s = Session::new(Flow::Share);
-        s.start(&mut api);
-        s.stop(&mut api);
-        assert!(api.log.contains(&"stop 7".to_string()));
+        s.start();
+        serve(&mut s, State::Live);
+        s.stop();
+        assert_eq!(s.take_calls(), vec![Call::Stop(7)]);
         assert_eq!(s.view().page, Page::Failed);
-        assert!(!s.wants_poll());
-        api.status = st(State::WaitingForAnswer);
-        s.again(&mut api);
-        assert_eq!(s.view().page, Page::Invite);
+        s.tick();
+        assert!(s.take_calls().is_empty());
+        s.again();
+        assert_eq!(s.take_calls(), vec![Call::Share]);
     }
 
     #[test]
-    fn a_refused_share_fails_with_its_reason_and_the_stub_shows_a_problem() {
-        struct Refuse;
-        impl GuestApi for Refuse {
-            fn share(&mut self) -> Result<u64, ApiError> {
-                Err(ApiError("guest_return_feed".into()))
-            }
-            fn code(&mut self, _: Flow, _: u64) -> Result<String, ApiError> {
-                unreachable!()
-            }
-            fn accept_answer(&mut self, _: u64, _: &str) -> Result<(), ApiError> {
-                unreachable!()
-            }
-            fn add_guest(&mut self, _: &str) -> Result<u64, ApiError> {
-                unreachable!()
-            }
-            fn confirm(&mut self, _: Flow, _: u64) -> Result<(), ApiError> {
-                unreachable!()
-            }
-            fn stop(&mut self, _: Flow, _: u64) -> Result<(), ApiError> {
-                unreachable!()
-            }
-            fn status(&mut self, _: Flow, _: u64) -> Result<Status, ApiError> {
-                unreachable!()
-            }
-        }
+    fn a_refused_share_fails_with_its_reason_and_a_plain_text_shows_a_problem() {
         let mut s = Session::new(Flow::Share);
-        s.start(&mut Refuse);
+        s.start();
+        s.answer(&Call::Share, Err(CallError("guest_return_feed".into())), 0);
         assert_eq!(s.view().page, Page::Failed);
         assert!(s.view().failure.contains("return mix"));
         let mut s = Session::new(Flow::Share);
-        s.start(&mut Unavailable);
+        s.start();
+        s.answer(
+            &Call::Share,
+            Err(CallError("Guests are not here.".into())),
+            0,
+        );
         assert_eq!(s.view().page, Page::Invite);
-        assert_eq!(s.problem(), NOT_YET);
+        assert_eq!(s.problem(), "Guests are not here.");
+    }
+
+    #[test]
+    fn a_share_missing_from_the_status_is_closed() {
+        let mut s = Session::new(Flow::Share);
+        s.start();
+        serve(&mut s, State::Live);
+        s.answer(&Call::Status, Ok(Reply::Rows(Vec::new())), 0);
+        assert_eq!(s.status().state, State::Closed);
+    }
+
+    #[test]
+    fn calls_never_print_a_code() {
+        let c = Call::Answer(7, "rbs-guest:1:hunter2xyz".into());
+        assert!(!format!("{c:?}").contains("hunter2xyz"));
+        assert!(
+            !format!("{:?}", Call::AddGuest("rbs-guest:1:hunter2xyz".into()))
+                .contains("hunter2xyz")
+        );
     }
 }
