@@ -1,6 +1,6 @@
 # ADR-0201: A guest share of several scenes
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-28
 - Deciders: Salih (owner)
 - Extends: [ADR-0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) decisions 4, 5, 9, 11, 12, 13 and 14. It replaces two parts of ADR-0139: decision 1's "the program of one canvas" (a share may now carry fixed scenes too), and decision 15's phase-3 item "guest screen sharing as a second video track", for which this is the ADR that item asked for. It extends ADR-0107 decision 6 and ADR-0152 (which scenes count as shown). A share of one picture of the program is still ADR-0139 phase 1 as built.
@@ -146,4 +146,6 @@ Independent review per ADR-0014, 2026-11-28, by an AI session that got only the 
 14. `guest.source.add` keeps `source` and `item`.
 15. Adds a track sync test.
 
-Owner approval: pending.
+### Owner approval
+
+Salih, 2026-11-28, in the project chat: "Onaylıyorum." ("I approve."), on the morning list item "ADR-0201: read and approve".

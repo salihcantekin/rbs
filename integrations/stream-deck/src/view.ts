@@ -31,6 +31,7 @@ export interface Elapsed { ms: number; at: number; running: boolean }
 
 export function linkText(s: LinkStatus): LinkText {
 	switch (s.state) {
+		case "idle": return { title: "Not connected" };
 		case "no_token": return { title: "Set token" };
 		case "unreachable": return { title: "Not connected" };
 		case "auth_failed": return { title: "Token rejected" };
@@ -318,8 +319,64 @@ function lookRaw(kind: Kind, settings: Settings, state: ViewState, ctx: RenderCo
 	}
 }
 
-/** The SVG of one key. */
-export function renderKey(kind: Kind, settings: Settings, link: LinkStatus, state: ViewState, ctx: RenderContext): string {
-	if (link.state !== "ready") return linkKey(linkText(link));
-	return drawKey(look(kind, settings, state, ctx));
+/**
+ * Link states in which keys keep their usual look: RBS is closed, remote control is off or the link
+ * is coming up. A press then shows the link state for a moment (`NOTICE_MS`). The other states need
+ * the user to act (token, version), so every key keeps showing them.
+ */
+export function keepsLook(link: LinkStatus): boolean {
+	return link.state === "idle" || link.state === "connecting" || link.state === "unreachable";
+}
+
+/** How long a press while RBS is not reachable shows the link state on the key, in ms. */
+export const NOTICE_MS = 2000;
+
+/**
+ * The look of a key while RBS is not reachable: what the key does, with the names it saved
+ * (`rememberedName`), and no live state (no tone, ring, dot or second line).
+ */
+export function restingLook(kind: Kind, settings: Settings, ctx: RenderContext): KeyLook {
+	const k = look(kind, settings, {}, ctx);
+	const saved = kind === "scene" || kind === "preview" ? settings.sceneName : settings.sourceName;
+	const fallback: Partial<Record<Kind, string>> = {
+		scene: "Scene",
+		preview: "Preview",
+		"source-visible": "Source",
+		mute: settings.source === "master" ? "Master" : "Mute",
+		filter: "Filter",
+		"bus-mute": settings.bus ?? "Track",
+		collection: "Collection",
+		profile: "Profile",
+	};
+	const own = settings.label0?.trim();
+	const label = own && !ctx.titled ? own : (fallback[kind] !== undefined ? (saved?.trim() || fallback[kind]!) : k.label);
+	return { ...k, label, sub: undefined, tone: "neutral", ring: false, pulse: false, dot: false };
+}
+
+/**
+ * The name a key saves in its settings while RBS is reachable, so it can show it while RBS is not:
+ * the scene, source, collection or profile it points at. Undefined when there is nothing new to save.
+ */
+export function rememberedName(kind: Kind, settings: Settings, state: ViewState): { sceneName: string } | { sourceName: string } | undefined {
+	if (kind === "scene" || kind === "preview") {
+		const name = state.scenes?.scenes.find((x) => String(x.id) === settings.scene)?.name;
+		return name && name !== settings.sceneName ? { sceneName: name } : undefined;
+	}
+	let name: string | undefined;
+	if (kind === "source-visible" || ((kind === "mute" || kind === "volume") && settings.source !== "master")) {
+		name = (state.scenes?.sources ?? state.sources)?.find((x) => String(x.id) === settings.source)?.name;
+	} else if (kind === "collection" || kind === "profile") {
+		name = (kind === "collection" ? state.collections : state.profileLibrary)?.entries.find((e) => e.id === settings.entry)?.name;
+	}
+	return name && name !== settings.sourceName ? { sourceName: name } : undefined;
+}
+
+/**
+ * The SVG of one key. `notice` is true for a moment after a press while RBS is not reachable:
+ * the key then shows the link state instead of its usual look.
+ */
+export function renderKey(kind: Kind, settings: Settings, link: LinkStatus, state: ViewState, ctx: RenderContext, notice = false): string {
+	if (link.state === "ready") return drawKey(look(kind, settings, state, ctx));
+	if (keepsLook(link) && !notice) return drawKey(restingLook(kind, settings, ctx));
+	return linkKey(linkText(link));
 }

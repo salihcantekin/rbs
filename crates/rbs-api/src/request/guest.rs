@@ -5,9 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 /// `guest.share` (`admin`, `live`): an invite of the main canvas's program. Refused
-/// with `conflict` and `data.reason` `guest_return_feed` while the program draws a
-/// guest, `no_encoder_slot` or `too_many_outputs` when no slot is free; nothing is
-/// opened then.
+/// with `conflict` and `data.reason` `guest_return_feed` while the program or a
+/// bound hold scene draws a guest, `no_encoder_slot` or `too_many_outputs` when no
+/// slot is free; nothing is opened then.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

@@ -4,7 +4,7 @@ import type { JsonObject } from "@elgato/utils";
 import { dialFeedback, toDataUrl } from "../pictures/pictures.js";
 import { explain, press, turnVolume } from "../press.js";
 import { client, elapsed, lease, live } from "../runtime.js";
-import { type Kind, type Settings, type ViewState, dialView, filterName, linkText, renderKey, stateIndex } from "../view.js";
+import { type Kind, NOTICE_MS, type Settings, type ViewState, dialView, filterName, keepsLook, linkText, rememberedName, renderKey, stateIndex } from "../view.js";
 
 /** Every action instance, so a state change repaints all keys. */
 const instances = new Set<RbsKeyAction>();
@@ -16,6 +16,8 @@ const lastError = new Map<string, string>();
 const titles = new Map<string, Map<number, boolean>>();
 const stateOf = new Map<string, number>();
 const busy = new Set<string>();
+/** Keys pressed while RBS is not reachable: they show the link state until their timer ends. */
+const notices = new Map<string, ReturnType<typeof setTimeout>>();
 let tick: ReturnType<typeof setInterval> | undefined;
 
 function repaintAll(fromTick = false): void {
@@ -24,9 +26,20 @@ function repaintAll(fromTick = false): void {
 		const kind = [...instances].find((i) => i.actions.some((a) => a.id === id))?.kind;
 		if (!kind) continue;
 		const state = client.state as unknown as ViewState;
+		const ready = client.status.state === "ready";
+		if (ready) {
+			endNotice(id);
+			const name = rememberedName(kind, settings, state);
+			if (name) {
+				const next = { ...settings, ...name };
+				known.set(id, { settings: next, action });
+				void action.setSettings(next as JsonObject);
+			}
+		}
+		const notice = notices.has(id) || !keepsLook(client.status);
 		if (action.isDial()) {
 			const v = dialView(kind, settings, state);
-			const fb = client.status.state === "ready" ? dialFeedback(v.title, v.volume, v.muted) : { title: linkText(client.status).title, value: "", indicator: { value: 0 } };
+			const fb = ready ? dialFeedback(v.title, v.volume, v.muted) : notice ? { title: linkText(client.status).title, value: "", indicator: { value: 0 } } : dialFeedback(v.title, undefined, undefined);
 			const key = JSON.stringify(fb);
 			if (shown.get(id) !== key) {
 				shown.set(id, key);
@@ -36,18 +49,39 @@ function repaintAll(fromTick = false): void {
 		}
 		if (!action.isKey()) continue;
 		// Two-state keys: the user may give each state its own title (and Stream Deck draws it).
-		const idx = client.status.state === "ready" ? stateIndex(kind, settings, state) : 0;
+		const idx = ready ? stateIndex(kind, settings, state) : 0;
 		if (stateOf.get(id) !== idx) {
 			stateOf.set(id, idx);
 			void action.setState(idx);
 		}
-		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: [...(titles.get(id)?.values() ?? [])].some(Boolean) }));
+		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: [...(titles.get(id)?.values() ?? [])].some(Boolean) }, notice));
 		if (shown.get(id) === svg) continue;
 		shown.set(id, svg);
 		void action.setImage(svg);
 	}
 	updateTick();
 	if (!fromTick) void sendLists();
+}
+
+/**
+ * A press while RBS is not reachable: the key shows the link state for `NOTICE_MS`, then its usual
+ * look again. A timer exists only while a notice shows (P13).
+ */
+function showNotice(id: string): void {
+	endNotice(id);
+	notices.set(id, setTimeout(() => {
+		notices.delete(id);
+		shown.delete(id);
+		repaintAll(true);
+	}, NOTICE_MS));
+	repaintAll(true);
+}
+
+function endNotice(id: string): void {
+	const t = notices.get(id);
+	if (t === undefined) return;
+	clearTimeout(t);
+	notices.delete(id);
 }
 
 /** The 1 s timer (times, blinking) exists only while a recording or stream runs and a key shows it (P13). */
@@ -118,6 +152,7 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 		lastError.delete(ev.action.id);
 		titles.delete(ev.action.id);
 		stateOf.delete(ev.action.id);
+		endNotice(ev.action.id);
 		lease.release(ev.action.id);
 		updateTick();
 	}
@@ -154,8 +189,17 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 		void sendLists();
 	}
 
+	/** True when the link is not ready; the press then asks for a retry and the key says why nothing happened. */
+	private notReady(action: { id: string; showAlert(): Promise<void> }): boolean {
+		if (client.status.state === "ready") return false;
+		client.retryNow();
+		if (keepsLook(client.status)) showNotice(action.id);
+		else void action.showAlert();
+		return true;
+	}
+
 	override async onDialRotate(ev: DialRotateEvent<JsonObject>): Promise<void> {
-		if (client.status.state !== "ready") return;
+		if (this.notReady(ev.action)) return;
 		try {
 			await turnVolume(this.kind, ev.payload.settings as Settings, ev.payload.ticks, client);
 		} catch (err) {
@@ -164,7 +208,7 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 	}
 
 	override async onDialDown(ev: DialDownEvent<JsonObject>): Promise<void> {
-		if (client.status.state !== "ready") return;
+		if (this.notReady(ev.action)) return;
 		try {
 			await press(this.kind === "bus-volume" ? "bus-volume" : "volume", ev.payload.settings as Settings, client);
 		} catch (err) {
@@ -175,11 +219,7 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 	override async onKeyDown(ev: KeyDownEvent<JsonObject>): Promise<void> {
 		const id = ev.action.id;
 		if (busy.has(id)) return;
-		if (client.status.state !== "ready") {
-			client.retryNow();
-			await ev.action.showAlert();
-			return;
-		}
+		if (this.notReady(ev.action)) return;
 		busy.add(id);
 		try {
 			await press(this.kind, ev.payload.settings as Settings, client);
