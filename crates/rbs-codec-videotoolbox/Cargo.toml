@@ -1,6 +1,6 @@
 [package]
 name = "rbs-codec-videotoolbox"
-description = "VideoToolbox adapter for the RBS encoder port: H.264 and HEVC on macOS, zero-copy from IOSurfaces."
+description = "VideoToolbox adapter for the RBS encoder port (H.264 and HEVC on macOS, zero-copy from IOSurfaces) and the live H.264 decoder port."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,11 +13,13 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-core = { path = "../rbs-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Slot counting and the janitor of the decoder's native pool (as rbs-media-avf).
+rbs-capture = { path = "../rbs-capture" }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "objc2-core-video"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVPixelBufferPool", "CVReturn", "objc2-io-surface"] }
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation"] }
-objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTBase", "VTCompressionProperties", "VTCompressionSession", "VTErrors", "VTSession", "VTVideoEncoderList", "objc2-core-media", "objc2-core-video"] }
+objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTBase", "VTCompressionProperties", "VTCompressionSession", "VTDecompressionProperties", "VTDecompressionSession", "VTErrors", "VTSession", "VTVideoEncoderList", "objc2-core-media", "objc2-core-video"] }
 
 [dev-dependencies]
 rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
@@ -25,6 +27,11 @@ rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
 rbs-media-format = { path = "../rbs-media-format" }
 # Micro-benchmarks for the encode hand-off (measure-performance skill, ADR-0009).
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# tests/studio_import.rs: decoded IOSurfaces imported and drawn as the studio does
+# (ADR-0025 lets the adapter's tests use rbs-gpu; the library never does).
+rbs-gpu = { path = "../rbs-gpu" }
 
 [[bench]]
 name = "encode"
