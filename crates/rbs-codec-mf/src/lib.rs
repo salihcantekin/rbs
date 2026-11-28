@@ -1,5 +1,9 @@
-//! Media Foundation adapter for the RBS encoder port (`docs/specs/output-ports.md`):
-//! AAC-LC on Windows through Microsoft's AAC encoder MFT (`CLSID_AACMFTEncoder`).
+//! Media Foundation adapters on Windows: AAC-LC for the RBS encoder port
+//! (`docs/specs/output-ports.md`) through Microsoft's AAC encoder MFT
+//! (`CLSID_AACMFTEncoder`), and the live H.264 decoder of the video decoder port
+//! ([`decode`]; `docs/specs/backend-ports.md`, "Live video decode").
+//!
+//! The AAC encoder:
 //!
 //! - Input: `f32` blocks of any length, planar or interleaved, mono or stereo at
 //!   44.1 or 48 kHz. Samples are converted to 16-bit PCM (the only input the
@@ -24,6 +28,8 @@
 //!
 //! Licence: Media Foundation is part of Windows; the bindings are MIT OR Apache-2.0.
 
+pub mod decode;
+
 #[cfg(any(windows, feature = "testing"))]
 mod session;
 
@@ -46,6 +52,7 @@ pub const SAMPLE_RATES: [u32; 2] = [44_100, 48_000];
 /// 12000, 16000, 20000 or 24000), for every channel count.
 pub const BITRATES: [u64; 4] = [96_000, 128_000, 160_000, 192_000];
 
+pub use decode::MfH264DecoderFactory;
 pub use platform::MfAacFactory;
 
 /// The concrete session type.
