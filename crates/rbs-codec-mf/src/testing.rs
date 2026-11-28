@@ -3,6 +3,9 @@
 //! Microsoft encoder's shape: one access unit per 1024-sample frame, delayed by
 //! [`DELAY_FRAMES`] frames, which `finish` releases.
 
+#[cfg(windows)]
+pub mod h264;
+
 use rbs_codec::{AudioEncoder, AudioEncoderConfig, AudioEncoderFactory, CreateError, EncodeError};
 use rbs_core::capability::CapabilitySet;
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};

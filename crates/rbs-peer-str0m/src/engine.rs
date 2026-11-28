@@ -17,6 +17,7 @@ use str0m::media::{Direction, MediaKind};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
 
+use crate::media::{MediaCounters, MediaState, Received, Track, WriteError};
 use crate::stun::{Gatherer, TransactionId};
 use crate::{crypto, payload};
 
@@ -118,6 +119,7 @@ pub struct Engine {
     secrets: Vec<String>,
     /// Media sections in this side's offer, which a usable answer matches.
     offer_media: usize,
+    media: MediaState,
 }
 
 impl std::fmt::Debug for Engine {
@@ -261,6 +263,7 @@ impl Engine {
             next_punch: None,
             secrets: Vec::new(),
             offer_media: 0,
+            media: MediaState::default(),
         })
     }
 
@@ -509,8 +512,11 @@ impl Engine {
         let (kind, sdp) = match self.role {
             PeerRole::Offerer => {
                 let mut change = self.rtc.sdp_api();
-                change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-                change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+                let video =
+                    change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+                let audio =
+                    change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+                self.media.set_mids(video, audio);
                 let Some((offer, pending)) = change.apply() else {
                     self.fail(FailureReason::Unreachable);
                     return;
@@ -581,8 +587,54 @@ impl Engine {
 
     fn on_event(&mut self, event: Event, now: Instant) {
         if let Event::Connected = event {
-            self.connected(now)
+            self.connected(now);
+            return;
         }
+        let confirmed = self.role == PeerRole::Answerer && self.is_confirmed();
+        self.media.on_event(&event, confirmed);
+    }
+
+    fn is_confirmed(&self) -> bool {
+        self.phase == Phase::Connected { confirmed: true }
+    }
+
+    /// The sharing side writes one frame (an H.264 access unit in Annex B, or one Opus
+    /// packet). Refused until this side is confirmed (ADR-0139 decision 6).
+    pub fn write_media(
+        &mut self,
+        now: Instant,
+        track: Track,
+        capture_nanos: u64,
+        data: &[u8],
+    ) -> Result<(), WriteError> {
+        let confirmed = self.role == PeerRole::Offerer && self.is_confirmed();
+        let result = self
+            .media
+            .write(&mut self.rtc, confirmed, now, track, capture_nanos, data);
+        self.pump_rtc(now);
+        result
+    }
+
+    /// The host side's next received frame (only after this side is confirmed).
+    pub fn poll_received(&mut self) -> Option<Received> {
+        self.media.poll_received()
+    }
+
+    /// The host side asks the sharer for a keyframe.
+    pub fn request_keyframe(&mut self, now: Instant) -> bool {
+        let sent = self.media.request_keyframe(&mut self.rtc);
+        self.pump_rtc(now);
+        sent
+    }
+
+    /// Media counters.
+    pub fn media_counters(&self) -> MediaCounters {
+        self.media.counters()
+    }
+
+    /// The congestion estimate towards the peer, in bits per second.
+    pub fn bitrate_estimate(&self) -> Option<u64> {
+        self.media.estimate()
     }
 
     fn connected(&mut self, now: Instant) {

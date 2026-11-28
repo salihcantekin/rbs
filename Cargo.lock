@@ -5821,6 +5821,7 @@ name = "rbs-codec-mf"
 version = "0.0.1"
 dependencies = [
  "criterion 0.8.2",
+ "rbs-capture",
  "rbs-codec",
  "rbs-codec-mf",
  "rbs-core",
@@ -5838,6 +5839,16 @@ dependencies = [
  "rbs-codec-hw",
  "rbs-core",
  "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-opus"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-core",
 ]
 
 [[package]]
@@ -6244,15 +6255,20 @@ version = "0.0.1"
 dependencies = [
  "aes",
  "aes-gcm",
+ "criterion 0.8.2",
  "ctr",
  "dimpl",
  "hmac",
  "miniz_oxide 0.8.9",
  "p256",
+ "rbs-core",
  "rbs-crash",
+ "rbs-media-format",
  "rbs-peer",
+ "rbs-transport",
  "rcgen",
  "ring",
+ "rtrb",
  "sha1 0.11.0",
  "sha2 0.11.2",
  "str0m",

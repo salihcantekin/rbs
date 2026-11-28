@@ -14,7 +14,7 @@
 
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 pub use rbs_core::conformance::{Case, Outcome, PROBE_BUDGET, Report};
-use rbs_core::conformance::{guarded, probe_case, set_values};
+use rbs_core::conformance::{flag, guarded, probe_case, set_values};
 use rbs_core::media::{
     AudioBlock, AudioFormat, BitstreamFormat, Bytes, CodecId, EncodedPacket, MediaKind, MemoryKind,
     PixelFormat, PlaneLayout, Size, StreamParams, SystemFrame, VideoFormat, VideoFrame,
@@ -27,7 +27,8 @@ use crate::config::{
     AudioEncoderConfig, EncoderChange, KeyframeInterval, RateControl, VideoEncoderConfig,
 };
 use crate::encoder::{AudioEncoder, AudioEncoderFactory, VideoEncoder, VideoEncoderFactory};
-use crate::error::{CreateError, EncodeError};
+use crate::error::{CreateError, EncodeError, VideoDecodeError};
+use crate::video_decoder::{VideoDecoderConfig, VideoDecoderFactory};
 
 /// Supplies input frames for the video suite in the memory kind the adapter takes.
 ///
@@ -752,4 +753,365 @@ fn check_audio_packets(
         }
     }
     Ok(())
+}
+
+/// A short encoded clip for the decoder suite.
+///
+/// The clip is the live case of the guest source: Annex B, one access unit per packet,
+/// SPS and PPS in band in the first keyframe, no extradata, no B-frames. It starts with
+/// that keyframe. Give the packets stamps that are not multiples of 100 ns (for example
+/// `n * 11_111_111 + 7`), so an adapter that rounds to the platform's time unit fails.
+#[derive(Debug, Clone)]
+pub struct DecodeClip {
+    /// Codec of the packets.
+    pub codec: CodecId,
+    /// Packets in decode order; the first is a keyframe.
+    pub packets: Vec<EncodedPacket>,
+    /// Picture size (cropped) every packet decodes to.
+    pub size: Size,
+    /// Pictures the adapter may still hold after a packet is submitted and drained
+    /// (0 for a synchronous decoder, 1 at most for others; the `no-lookahead` case).
+    pub lookahead: usize,
+}
+
+/// Runs the live video decoder suite against `factory` with `clip`.
+///
+/// Checks the contract of `docs/specs/backend-ports.md` (live video decode): the adapter
+/// declares the clip's codec; one picture per packet with the packet's `pts` bit-exact,
+/// the clip's size, in order, no more than `lookahead` pictures late; a delta packet
+/// before any keyframe is `NeedKeyframe`; `reset` and `flush` gate on the next keyframe;
+/// hostile input gives typed errors and leaves the session usable; a packet of another
+/// codec is `InvalidInput`; a picture over `max_size` is refused; native pictures obey
+/// `max_surfaces`. Pictures are dropped between checks, which must release their leases.
+pub fn video_decoder(factory: &dyn VideoDecoderFactory, clip: &DecodeClip) -> Report {
+    let mut report = Report::default();
+    let Some(caps) = probe_case(&mut report, factory) else {
+        return report;
+    };
+    let names = set_values(&caps, &caps::VIDEO_DECODE);
+    if names.is_empty() {
+        let hardware_absent = !flag(&caps, &caps::HARDWARE);
+        report.record(
+            "codec.video.decode",
+            if hardware_absent {
+                Outcome::Skipped("adapter declares no decoder on this machine".into())
+            } else {
+                Outcome::Failed("no decode codec declared".into())
+            },
+        );
+        return report;
+    }
+    if !names.iter().any(|n| n == clip.codec.as_str()) {
+        report.record(
+            "codec.video.decode",
+            Outcome::Skipped(format!("adapter does not declare {}", clip.codec)),
+        );
+        return report;
+    }
+    let config = VideoDecoderConfig::h264_annex_b(Size::new(
+        clip.size.width.max(1920),
+        clip.size.height.max(1088),
+    ));
+    let create = || guarded(|| factory.create(&config).map_err(|e| e.to_string()));
+    let mut decoder = match create() {
+        Ok(d) => d,
+        Err(e) => {
+            report.record("create", Outcome::Failed(e));
+            return report;
+        }
+    };
+    let Some(key) = clip.packets.first().cloned().filter(|p| p.keyframe()) else {
+        report.record(
+            "clip",
+            Outcome::Failed("clip must start with a keyframe".into()),
+        );
+        return report;
+    };
+    let delta = clip.packets.iter().find(|p| !p.keyframe()).cloned();
+
+    if let Some(delta) = &delta {
+        let r = guarded(|| Ok(decoder.submit(delta)));
+        report.check(
+            "delta-before-keyframe",
+            match r {
+                Ok(Err(VideoDecodeError::NeedKeyframe)) => Ok(()),
+                Ok(other) => Err(format!("expected NeedKeyframe, got {other:?}")),
+                Err(e) => Err(e),
+            },
+        );
+    }
+
+    hostile_cases(&mut report, decoder.as_mut(), clip, &key);
+
+    report.check("no-lookahead", lookahead_case(decoder.as_mut(), clip));
+
+    // The whole clip, bit-exact stamps, format and counters.
+    let run = guarded(|| {
+        decoder.reset().map_err(|e| e.to_string())?;
+        decode_all(decoder.as_mut(), &clip.packets)
+    });
+    let frames = run.and_then(|f| check_frames(&f, clip).map(|()| f));
+    let any_native = frames.as_ref().is_ok_and(|f| f.iter().any(|v| v.native));
+    report.check("decode-clip", frames.map(|_| ()));
+    let st = decoder.stats();
+    report.check(
+        "stats",
+        if st.pictures >= clip.packets.len() as u64 {
+            Ok(())
+        } else {
+            Err(format!("stats after the clip: {st:?}"))
+        },
+    );
+    report.check(
+        "output-format",
+        match decoder.output_format() {
+            Some(f) if f.size == clip.size => Ok(()),
+            other => Err(format!("output_format {other:?}, clip {:?}", clip.size)),
+        },
+    );
+    report.check(
+        "max-surfaces",
+        if decoder.max_surfaces() > 8 {
+            Err("max_surfaces above 8".into())
+        } else if any_native && decoder.max_surfaces() == 0 {
+            Err("native pictures but max_surfaces is 0".into())
+        } else {
+            Ok(())
+        },
+    );
+
+    // flush gates on the next keyframe and a second flush emits nothing.
+    let mut out = Vec::new();
+    let r = guarded(|| {
+        decoder.flush(&mut out).map_err(|e| e.to_string())?;
+        if !out.is_empty() {
+            return Err("second flush emitted pictures".into());
+        }
+        if !decoder.stats().need_keyframe {
+            return Err("stats.need_keyframe false after flush".into());
+        }
+        Ok(())
+    });
+    report.check("flush-gates-and-second-flush-empty", r);
+
+    // Reset waits for the next keyframe, then decodes again.
+    if let Some(delta) = &delta {
+        let r = guarded(|| {
+            // Be mid-stream (keyframe decoded) so that reset has something to gate.
+            decoder.reset().map_err(|e| e.to_string())?;
+            decoder.submit(&key).map_err(|e| e.to_string())?;
+            decoder.reset().map_err(|e| e.to_string())?;
+            if !decoder.stats().need_keyframe {
+                return Err("stats.need_keyframe false right after reset".into());
+            }
+            let after_reset = decoder.submit(delta);
+            if after_reset != Err(VideoDecodeError::NeedKeyframe) {
+                return Err(format!("after reset a delta gave {after_reset:?}"));
+            }
+            let frames = decode_all(decoder.as_mut(), &clip.packets)?;
+            check_frames(&frames, clip)
+        });
+        report.check("reset-then-keyframe", r);
+    } else {
+        report.record(
+            "reset-then-keyframe",
+            Outcome::Skipped("clip has no delta packet".into()),
+        );
+    }
+
+    foreign_and_size_cases(
+        &mut report,
+        factory,
+        decoder.as_mut(),
+        clip,
+        &key,
+        delta.as_ref(),
+    );
+    report
+}
+
+type Decoder<'a> = &'a mut dyn crate::video_decoder::VideoDecoder;
+
+fn lookahead_case(decoder: Decoder<'_>, clip: &DecodeClip) -> Result<(), String> {
+    guarded(|| {
+        decoder.reset().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut seen = 0usize;
+        for (i, p) in clip.packets.iter().enumerate() {
+            decoder.submit(p).map_err(|e| e.to_string())?;
+            decoder.drain(&mut out).map_err(|e| e.to_string())?;
+            seen += out.len();
+            out.clear();
+            if seen + clip.lookahead < i + 1 {
+                return Err(format!(
+                    "after packet {i} only {seen} pictures (lookahead {})",
+                    clip.lookahead
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+fn hostile_cases(
+    report: &mut Report,
+    decoder: Decoder<'_>,
+    clip: &DecodeClip,
+    key: &EncodedPacket,
+) {
+    // Hostile input: typed errors, no panic, and the session still decodes the clip.
+    let garbage: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", Vec::new()),
+        ("zeros", vec![0; 64]),
+        ("no-start-code", vec![0x41; 200]),
+        (
+            "truncated-keyframe",
+            key.data().iter().take(9).copied().collect(),
+        ),
+        ("only-start-code", vec![0, 0, 0, 1]),
+        (
+            "huge-nal-type",
+            vec![0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff],
+        ),
+    ];
+    let r = guarded(|| {
+        for (name, bytes) in &garbage {
+            for keyframe in [true, false] {
+                let Ok(p) = EncodedPacket::new(
+                    clip.codec,
+                    BitstreamFormat::AnnexB,
+                    key.pts(),
+                    key.pts(),
+                    keyframe,
+                    Bytes::from(bytes.clone()),
+                ) else {
+                    continue;
+                };
+                match decoder.submit(&p) {
+                    Ok(()) | Err(_) => {}
+                }
+                let mut sink = Vec::new();
+                decoder
+                    .drain(&mut sink)
+                    .map_err(|e| format!("drain after {name}: {e}"))?;
+            }
+        }
+        Ok(())
+    });
+    report.check("hostile-input", r);
+    report.check(
+        "decode-after-hostile-input",
+        guarded(|| {
+            decoder.reset().map_err(|e| e.to_string())?;
+            let frames = decode_all(decoder, &clip.packets)?;
+            check_frames(&frames, clip)
+        }),
+    );
+}
+
+fn foreign_and_size_cases(
+    report: &mut Report,
+    factory: &dyn VideoDecoderFactory,
+    decoder: Decoder<'_>,
+    clip: &DecodeClip,
+    key: &EncodedPacket,
+    delta: Option<&EncodedPacket>,
+) {
+    // Another codec is refused, and the session still decodes afterwards.
+    if let Ok(foreign) = EncodedPacket::new(
+        CodecId::Aac,
+        BitstreamFormat::Raw,
+        key.pts(),
+        key.pts(),
+        true,
+        Bytes::from_static(&[0, 1, 2, 3]),
+    ) {
+        let r = guarded(|| {
+            decoder.reset().map_err(|e| e.to_string())?;
+            match decoder.submit(&foreign) {
+                Err(VideoDecodeError::InvalidInput(_)) => {}
+                other => return Err(format!("expected InvalidInput, got {other:?}")),
+            }
+            let frames = decode_all(decoder, &clip.packets)?;
+            check_frames(&frames, clip)
+        });
+        report.check("foreign-codec", r);
+    }
+
+    // A picture over max_size is refused, and later deltas wait for a keyframe.
+    let small = VideoDecoderConfig::h264_annex_b(Size::new(
+        (clip.size.width / 2).max(2),
+        (clip.size.height / 2).max(2),
+    ));
+    let r = guarded(|| {
+        let mut d = factory.create(&small).map_err(|e| e.to_string())?;
+        match d.submit(key) {
+            Err(VideoDecodeError::InvalidInput(_) | VideoDecodeError::Unsupported(_)) => {}
+            other => return Err(format!("a picture over max_size gave {other:?}")),
+        }
+        if let Some(delta) = delta
+            && d.submit(delta) != Err(VideoDecodeError::NeedKeyframe)
+        {
+            return Err("a delta after a refused keyframe was not NeedKeyframe".into());
+        }
+        Ok(())
+    });
+    report.check("max-size", r);
+}
+
+/// What the suite keeps of a picture, so the picture itself (and its lease) is released
+/// at once and a small native pool is enough for any clip length.
+struct Seen {
+    pts: rbs_core::time::Timestamp,
+    size: Size,
+    native: bool,
+}
+
+impl Seen {
+    fn of(f: &VideoFrame) -> Self {
+        Self {
+            pts: f.timestamp(),
+            size: f.format().size,
+            native: f.memory_kind() != MemoryKind::System,
+        }
+    }
+}
+
+fn check_frames(frames: &[Seen], clip: &DecodeClip) -> Result<(), String> {
+    if frames.len() != clip.packets.len() {
+        return Err(format!(
+            "{} pictures for {} packets",
+            frames.len(),
+            clip.packets.len()
+        ));
+    }
+    for (f, p) in frames.iter().zip(&clip.packets) {
+        if f.size != clip.size {
+            return Err(format!("picture size {:?}, clip {:?}", f.size, clip.size));
+        }
+        if f.pts != p.pts() {
+            return Err(format!(
+                "picture timestamp {:?} is not the packet's pts {:?} (bit-exact)",
+                f.pts,
+                p.pts()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn decode_all(
+    decoder: &mut dyn crate::video_decoder::VideoDecoder,
+    packets: &[EncodedPacket],
+) -> Result<Vec<Seen>, String> {
+    let mut seen = Vec::with_capacity(packets.len());
+    let mut out = Vec::new();
+    for p in packets {
+        decoder.submit(p).map_err(|e| e.to_string())?;
+        decoder.drain(&mut out).map_err(|e| e.to_string())?;
+        seen.extend(out.drain(..).map(|f| Seen::of(&f)));
+    }
+    decoder.flush(&mut out).map_err(|e| e.to_string())?;
+    seen.extend(out.drain(..).map(|f| Seen::of(&f)));
+    Ok(seen)
 }

@@ -5,6 +5,8 @@
 
 mod crypto;
 pub mod engine;
+mod link;
+pub mod media;
 pub mod net;
 pub mod payload;
 #[cfg(test)]
@@ -13,4 +15,5 @@ mod sim_tests;
 mod spike_tests;
 pub mod stun;
 
-pub use net::{TYPE_ID, WebRtcMedia, WebRtcPeerFactory};
+pub use link::{GuestReceiver, WebRtcMedia, WebRtcTransport};
+pub use net::{TYPE_ID, WebRtcPeerFactory};
