@@ -286,6 +286,8 @@ format = 4
 # Not motion: how long a toast stays before it closes, and how often the time left steps.
 "delay.toast" = 8000
 "delay.toast-tick" = 1000
+# Not motion: how often Settings > Guests reads the share's state while the page shows.
+"delay.guest-refresh" = 1000
 # Not motion: how long the undo toast after deleting a source stays (shorter than
 # `delay.toast`: Undo is wanted at once or not at all, owner 2026-11-22).
 "delay.toast-undo" = 3000

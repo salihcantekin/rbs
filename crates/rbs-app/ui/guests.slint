@@ -33,7 +33,7 @@ export component GuestsSettings inherits Rectangle {
 
     // Only while the page shows (P13): the section's own timer.
     Timer {
-        interval: 1s;
+        interval: Tokens.delay-guest-refresh;
         running: true;
         triggered => { root.refresh(); }
     }

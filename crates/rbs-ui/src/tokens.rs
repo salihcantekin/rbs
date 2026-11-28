@@ -210,6 +210,7 @@ pub const DURATIONS: &[&str] = &[
     "delay.submenu",
     "delay.toast",
     "delay.toast-tick",
+    "delay.guest-refresh",
     "delay.toast-undo",
     "delay.copied",
     "delay.find-fallback",
