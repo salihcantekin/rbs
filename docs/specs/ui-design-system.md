@@ -81,6 +81,7 @@ One family: the OS UI font (owner decision 2026-11-16; the built-in token file's
 | Source tab list | `size.target.thumb-w`=96 and `size.target.thumb-h`=54 (the picture in front of a display's or window's name, 16:9; not themeable), `size.target.preview-h`=280 and `size.target.preview-min-h`=160 (the capture region preview in Source settings: its height at the fitted window size, and the least it shrinks to; not themeable) |
 | Toast | `size.toast.border`=1 (outline; themeable, floor 1, up to 4, so a theme cannot drop it), `size.toast.rail`=2 (the time-left ring's stroke; not themeable, floor 2), `size.toast.edge`=4 (the coloured edge for the kind of notice; not themeable), `size.toast.max`=480 (widest the card may be; a longer message elides; not themeable, so a theme cannot grow it to the window), `size.toast.wide`=720 (widest the error bar may be, its message wrapping to two lines first; not themeable) |
 | First run | `size.first-run.w`=480 (the first-run card, ADR-0113; not themeable) |
+| Guest window | `size.guest.w`=480 (the Share and Add guest window, ADR-0139 phase 1d), `size.guest.code-h`=56 (a code box, two lines of text), `size.guest.word-h`=44 (one word of the check phrase), `size.guest.step-dot`=18 (a step's number circle), `size.guest.status-dot`=8 (the dot of a status badge); not themeable |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window), `size.floating.min-h`=240 and `size.floating.max-h`=760 (the least and the most a window sized to its content opens at; beyond the most it scrolls), `size.settings.w`=920, `size.settings.h`=680 (first size of the Settings window), `size.caption.w`=46 (a window button, ADR-0071, ADR-0180), `size.projector.resize-edge`=8 (how near the edge of a frameless projector a press resizes it on Windows, ADR-0125; not themeable) |
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
 | Text | `size.tracking.caps`=0.5 (letter spacing of uppercase section titles) |
@@ -225,6 +226,17 @@ The geometry and keys of a list of `ListRow` items on a `ScrollArea` (owner deci
 - **Inside a scrolling panel.** `inline` on: the box shows all its lines, keeps no bar room and does not scroll itself; the panel's `ScrollArea` scrolls (the Library's shapes).
 - **Long lists.** `virtual` on, for rows of one fixed height (the font picker, Shortcuts): the content is `count * row-height` high, and only rows whose index is in view, plus one page above and below, exist; the owner's `for` runs over `first-shown` to `first-shown + shown-count`. Home, End and the Page keys scroll first and focus the row once it exists. Screen readers see only the rows that exist; the list's accessible description gives the item count ("240 fonts"). Slint's std-widgets `ListView` is not used, because it draws its own scrollbar and styling.
 - **Accessibility.** Role `list`; the rows keep their own roles and names.
+
+### Guest window (ADR-0139 phase 1d)
+
+One window for **Share program** (Output menu, `ui.guest.share`) and **Add guest** (`ui.guest.add`), `size.guest.w` wide and as high as its page needs. Owner approved the mockups 2026-11-28; the pages are a pure function of the pairing's state (`rbs_app::guest_view`).
+
+- **Parts.** A header band (`surface.overlay`: the `link` or `user` icon in an `accent.subtle` tile, the title, one hint line, Close), a body, and a footer band (`surface.overlay`, `DialogActions`).
+- **Steps.** Invite, Answer, Compare as numbered circles (`size.guest.step-dot`): not reached `border.strong`; current `accent`; done a `state.healthy` ring with a check. Hidden once the pairing runs or fails.
+- **Code box.** `size.guest.code-h` high, `surface.sunken`, `radius.md`: the code wrapped and cut, and a copy `IconButton` that copies the whole code and shows a check while `delay.copied` runs.
+- **Status badge.** A pill with a dot (`size.guest.status-dot`) and the words: Waiting for answer and Connecting (`state.warning`), Not verified (`state.warning`), Connected (`state.healthy`), Failed (`state.error`). Never the live red (U12).
+- **Check phrase.** Six `WordChip`s in two rows of three (`accent.subtle`, `size.guest.word-h`, number in `caption`, word in `title`). The way-back button says "They differ: stop" (Share) or "They differ: remove" (Add guest) and ends the pairing; the answer says "They match: start sharing" or "They match: add guest".
+- **Texts.** The public-address note, the "channel you trust" note and the failure reasons (`guest_view::reason_text`) are caption text with an icon.
 
 ### PopoverLayer and PopoverCard
 

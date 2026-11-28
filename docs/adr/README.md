@@ -208,3 +208,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0198](0198-stream-deck-plugin.md) | Stream Deck plugin as a Control API client in `integrations/stream-deck/` | Accepted |
 | [0199](0199-background-removal-keeps-the-camera-until-its-first-mask.md) | Background removal keeps the camera until its first mask (0.5 s at most), then cross-fades | Accepted |
 | [0200](0200-automation-rules-and-scene-switcher.md) | Automation rules and the automatic scene switcher: event-driven engine on a cold thread, foreground-app port, actions as control API calls, trigger registry | Accepted |
+| [0201](0201-guest-share-of-several-scenes.md) | A guest share of several scenes: one pairing, up to 3 pictures (program or fixed scenes), a compositor per fixed scene, code version 2, one guest source per picture | Accepted |

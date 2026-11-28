@@ -181,13 +181,13 @@ impl UiForwarded {
 /// Unknown methods fail closed rather than inheriting `control`.
 pub fn authorize_method(caller: &Caller, method: &str) -> Result<(), ApiError> {
     let scope = method_scope(method).or_else(|| {
-        UI_METHODS
-            .contains(&method)
-            .then_some(Some(if method.starts_with("ui.profile.") {
+        UI_METHODS.contains(&method).then_some(Some(
+            if method.starts_with("ui.profile.") || method.starts_with("ui.guest.") {
                 Scope::Admin
             } else {
                 Scope::Control
-            }))
+            },
+        ))
     });
     let Some(scope) = scope else {
         return Err(ApiError::new(ErrorKind::MethodNotFound, "unknown method"));

@@ -14,7 +14,7 @@ use rbs_record::{
     VideoSettings,
 };
 use rbs_scene::SceneCollection;
-use rbs_scene::model::CanvasId;
+use rbs_scene::model::{CanvasId, SceneId};
 
 use super::Host;
 use super::guest_share::{
@@ -166,24 +166,33 @@ impl ShareStudio for Slots<'_> {
     }
 
     fn draws_guest(&self) -> bool {
-        draws_guest(self.collection, self.canvas)
+        draws_guest(
+            self.collection,
+            self.canvas,
+            self.studio.held_scene(self.canvas),
+        )
     }
 }
 
-/// The canvas's program scene draws a guest source (ADR-0139 decision 13).
-pub(super) fn draws_guest(collection: &SceneCollection, canvas: CanvasId) -> bool {
-    let Some(program) = collection.canvas(canvas).and_then(|c| c.program) else {
-        return false;
-    };
-    collection
-        .visible_sources(canvas, program)
-        .is_ok_and(|drawn| {
-            drawn.iter().any(|id| {
-                collection
-                    .source(*id)
-                    .is_some_and(|s| s.type_id.as_str() == GUEST_SOURCE_TYPE)
+/// The canvas's program scene, or its bound hold scene `held`, draws a guest source
+/// (ADR-0139 decision 13).
+pub(super) fn draws_guest(
+    collection: &SceneCollection,
+    canvas: CanvasId,
+    held: Option<SceneId>,
+) -> bool {
+    let program = collection.canvas(canvas).and_then(|c| c.program);
+    program.into_iter().chain(held).any(|scene| {
+        collection
+            .visible_sources(canvas, scene)
+            .is_ok_and(|drawn| {
+                drawn.iter().any(|id| {
+                    collection
+                        .source(*id)
+                        .is_some_and(|s| s.type_id.as_str() == GUEST_SOURCE_TYPE)
+                })
             })
-        })
+    })
 }
 
 fn slot_refusal(e: RecordError) -> ShareRefusal {
@@ -201,6 +210,24 @@ fn slot_refusal(e: RecordError) -> ShareRefusal {
     ShareRefusal::Slot {
         text: text.to_owned(),
         reason,
+    }
+}
+
+impl Host {
+    /// The outputs of the shares that hold a reservation but are not live yet, for the
+    /// ADR-0087 estimate of a start: a reserved share counts as a planned output (a
+    /// live one counts as a running output).
+    pub(super) fn guest_planned(&self) -> Vec<OutputSettings> {
+        self.guests
+            .shares
+            .reserved_videos()
+            .into_iter()
+            .map(|video| {
+                let mut out = share_output("rbs-guest://planned", video);
+                out.canvas = Some(self.canvas);
+                out
+            })
+            .collect()
     }
 }
 
@@ -270,5 +297,42 @@ impl Host {
             .changed(super::StateKey::topic(super::Topic::GuestChanged), || {
                 super::EventPayload::GuestChanged(payload)
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // Tests fail by panicking.
+
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings};
+
+    use super::*;
+    use crate::studio_host::HostConfig;
+    use crate::studio_host::support::shown_scene;
+
+    #[test]
+    fn the_return_feed_check_reads_the_program_and_the_bound_hold_scene() {
+        let d = HostConfig::desktop();
+        let mut col = SceneCollection::new();
+        let (canvas, program) = shown_scene(&mut col, d.size, d.fps).unwrap();
+        let (hold, _) = col.add_scene("Hold", SceneScope::Shared).unwrap();
+        let (guest, _) = col
+            .add_source("Guest", NodeTypeId::new(GUEST_SOURCE_TYPE), Settings::new())
+            .unwrap();
+        let place = |col: &mut SceneCollection, scene| {
+            col.add_item(
+                scene,
+                ItemContent::Source(guest),
+                Layout::new([0.0, 0.0], [10.0, 10.0]),
+                None,
+            )
+            .unwrap();
+        };
+        place(&mut col, hold);
+        assert!(!draws_guest(&col, canvas, None));
+        assert!(draws_guest(&col, canvas, Some(hold)));
+        place(&mut col, program);
+        assert!(draws_guest(&col, canvas, None));
     }
 }

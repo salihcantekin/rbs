@@ -145,7 +145,7 @@ fn every_settings_section_has_its_window_number() {
         .map(|s| settings_section(s).expect("known section"))
         .collect();
     seen.sort_unstable();
-    assert_eq!(seen, (0..14).collect::<Vec<_>>());
+    assert_eq!(seen, (0..15).collect::<Vec<_>>());
     assert_eq!(settings_section("mixer"), None);
     let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
     assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));

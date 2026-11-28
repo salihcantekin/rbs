@@ -158,7 +158,7 @@ impl ShareState {
 pub enum ShareReason {
     /// A pairing failure.
     Pairing(FailureReason),
-    /// The program draws a guest (ADR-0139 decision 13).
+    /// The program or the bound hold scene draws a guest (ADR-0139 decision 13).
     ReturnFeed,
     /// The share's output failed or did not start.
     Output,
@@ -247,7 +247,8 @@ pub trait ShareStudio {
     fn stop(&mut self, output: u64);
     /// The output failed for good.
     fn failed(&self, output: u64) -> bool;
-    /// The canvas's program draws a guest source (ADR-0139 decision 13).
+    /// The canvas's program or bound hold scene draws a guest source (ADR-0139
+    /// decision 13).
     fn draws_guest(&self) -> bool;
 }
 
@@ -620,6 +621,16 @@ impl GuestShares {
             })
             .min();
         (changed, next)
+    }
+
+    /// The pictures of the shares that hold a reservation but have no output yet:
+    /// planned outputs for the ADR-0087 estimate.
+    pub fn reserved_videos(&self) -> Vec<ShareVideo> {
+        self.shares
+            .iter()
+            .filter(|s| s.reservation.is_some() && s.output.is_none())
+            .map(|s| s.video)
+            .collect()
     }
 
     /// The shares, oldest first, ended ones until the next *Share*.

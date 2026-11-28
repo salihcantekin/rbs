@@ -104,6 +104,9 @@ const VCAM_CAMERA: &[Place] = &[at("virtual_camera", "settings.vcam.camera")];
 const VCAM_PICTURE: &[Place] = &[at("virtual_camera", "settings.vcam.picture")];
 const VCAM_SENDING: &[Place] = &[at("virtual_camera", "settings.vcam.sending")];
 const VCAM_REMOVAL: &[Place] = &[at("virtual_camera", "settings.vcam.removal")];
+const GUESTS_SHARE: &[Place] = &[at("guests", "settings.guests.share")];
+const GUESTS_PAIRING: &[Place] = &[at("guests", "settings.guests.pairing")];
+const GUESTS_ADD: &[Place] = &[at("guests", "settings.guests.add")];
 const REMOTE_THIS: &[Place] = &[at("remote_control", "settings.remote.this-computer")];
 const REMOTE_OTHER: &[Place] = &[at("remote_control", "settings.remote.other-computers")];
 const REMOTE_TOKENS: &[Place] = &[at("remote_control", "settings.remote.access-tokens")];
@@ -1039,6 +1042,60 @@ pub const SETTINGS: &[Setting] = &[
         "Recent actions",
         "mcp agent audit log history",
         AI_ACTIONS,
+    ),
+    // Guests
+    c(
+        "settings.guests.share",
+        "Share your program",
+        "guest remote share invite code webrtc",
+        GUESTS_SHARE,
+    ),
+    row(
+        "guests.share",
+        "Share program",
+        "guest remote invite code send program another rbs",
+        GUESTS_SHARE,
+        Simple,
+    ),
+    c(
+        "settings.guests.pairing",
+        "Pairing",
+        "guest remote invite check phrase",
+        GUESTS_PAIRING,
+    ),
+    row(
+        "guests.check-phrase",
+        "Compare the check phrase",
+        "guest verify words security pairing",
+        GUESTS_PAIRING,
+        Simple,
+    ),
+    row(
+        "guests.invite-lasts",
+        "Invite lasts",
+        "guest code expires lifetime minutes",
+        GUESTS_PAIRING,
+        Simple,
+    ),
+    row(
+        "guests.same-network",
+        "Same network only",
+        "guest local lan private addresses stun",
+        GUESTS_PAIRING,
+        Simple,
+    ),
+    c(
+        "settings.guests.add",
+        "Guests",
+        "guest remote source add",
+        GUESTS_ADD,
+    ),
+    row(
+        "guests.add",
+        "Add guest",
+        "guest remote source invite another rbs",
+        GUESTS_ADD,
+        Simple,
     ),
 ];
 

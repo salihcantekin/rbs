@@ -1,0 +1,176 @@
+// Settings › Guests (ADR-0139 phase 1d): share the program with another RBS, how a
+// share is made, and adding a guest. Rust (`guest_page`) pushes the state into the
+// properties the Settings window passes in and handles its callbacks; the share's
+// own window (`guest.slint`) does the pairing.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Select, Toggle, SettingRow } from "components.slint";
+import { SettingsCard, SettingsStatus } from "settings.slint";
+import { IconName } from "base/types.slint";
+
+export component GuestsSettings inherits Rectangle {
+    // Share: a share runs (or is being made), its line and state.
+    in property <bool> sharing;
+    in property <string> share-text;
+    in property <string> share-state;
+    in property <int> share-tone;
+    // Pairing: the saved settings.
+    in-out property <bool> check-phrase: true;
+    in-out property <int> lifetime: 2;
+    in property <[string]> lifetimes;
+    in-out property <bool> local-only;
+    // Add guest is not built until the guest source is (the host side of ADR-0139).
+    in property <bool> can-add;
+    in property <string> add-text;
+
+    // The page was shown: Rust pushes the saved settings.
+    callback shown();
+    callback open-share();
+    callback stop-share();
+    // A setting was changed; Rust saves the three values.
+    callback settings-changed();
+    // Asked every second while the page shows (the share's state is read then).
+    callback refresh();
+
+    // Only while the page shows (P13): the section's own timer.
+    Timer {
+        interval: 1s;
+        running: true;
+        triggered => { root.refresh(); }
+    }
+    init => {
+        root.shown();
+        root.refresh();
+    }
+
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("Share your program");
+            id: "settings.guests.share";
+            SettingRow {
+                find: "guests.share";
+                divider: root.sharing;
+                label: @tr("Share program");
+                summary: @tr("To another RBS over a direct connection");
+                hint: @tr("Sends the main canvas to another RBS. You send an invite code, get an answer code back and compare six words. Nothing goes through a server of ours.");
+                fill: false;
+                Button {
+                    lead: IconName.link;
+                    text: @tr("Share program...");
+                    kind: "primary";
+                    clicked => { root.open-share(); }
+                }
+            }
+            if root.sharing: SettingRow {
+                // find: none (shown only while sharing; the Share program row is indexed).
+                divider: false;
+                findable: false;
+                label: @tr("Sharing now");
+                help: root.share-text;
+                fill: false;
+                Button {
+                    lead: IconName.stop;
+                    text: @tr("Stop sharing");
+                    clicked => { root.stop-share(); }
+                }
+            }
+            if root.sharing: SettingsStatus {
+                text: root.share-state;
+                tone: root.share-tone;
+            }
+        }
+        SettingsCard {
+            title: @tr("Pairing");
+            id: "settings.guests.pairing";
+            SettingRow {
+                find: "guests.check-phrase";
+                label: @tr("Compare the check phrase");
+                summary: @tr("On by default");
+                hint: @tr("Nothing is shared until both users agree on six words. Turning this off leaves the channel that carried the codes as the only protection.");
+                changed: !root.check-phrase;
+                default-text: @tr("On");
+                reset => {
+                    root.check-phrase = true;
+                    root.settings-changed();
+                }
+                fill: false;
+                Toggle {
+                    label: @tr("Compare the check phrase");
+                    checked <=> root.check-phrase;
+                    toggled(on) => {
+                        root.check-phrase = on;
+                        root.settings-changed();
+                    }
+                }
+            }
+            SettingRow {
+                find: "guests.invite-lasts";
+                label: @tr("Invite lasts");
+                summary: @tr("How long a code can be used");
+                hint: @tr("How long an invite or an answer code can be used before it runs out.");
+                changed: root.lifetime != 2;
+                default-text: root.lifetimes[2];
+                reset => {
+                    root.lifetime = 2;
+                    root.settings-changed();
+                }
+                Select {
+                    label: @tr("Invite lasts");
+                    options: root.lifetimes;
+                    index: root.lifetime;
+                    selected(i) => {
+                        root.lifetime = i;
+                        root.settings-changed();
+                    }
+                }
+            }
+            SettingRow {
+                find: "guests.same-network";
+                divider: false;
+                label: @tr("Same network only");
+                summary: @tr("Off by default");
+                hint: @tr("Uses no public address, so only a computer on your own network can connect. Turn it on to keep your public address private on a local network.");
+                changed: root.local-only;
+                default-text: @tr("Off");
+                reset => {
+                    root.local-only = false;
+                    root.settings-changed();
+                }
+                fill: false;
+                Toggle {
+                    label: @tr("Same network only");
+                    checked <=> root.local-only;
+                    toggled(on) => {
+                        root.local-only = on;
+                        root.settings-changed();
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Guests");
+            id: "settings.guests.add";
+            SettingRow {
+                find: "guests.add";
+                divider: root.add-text != "";
+                label: @tr("Add guest");
+                summary: @tr("Another RBS's program as a source");
+                hint: @tr("Receives another RBS's program as a source in this scene. You need the guest's invite code.");
+                enabled: root.can-add;
+                fill: false;
+                Button {
+                    lead: IconName.user;
+                    text: @tr("Add guest...");
+                    enabled: root.can-add;
+                }
+            }
+            if root.add-text != "": SettingsStatus {
+                text: root.add-text;
+                tone: 0;
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}

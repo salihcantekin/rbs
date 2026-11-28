@@ -143,6 +143,7 @@ const CATEGORY_RULES: &[(&str, Category)] = &[
     ("vcam.", Category::Output),
     ("marker.", Category::Output),
     ("canvas.", Category::Output),
+    ("ui.guest.", Category::Output),
     ("ui.workspace.", Category::Layout),
     ("ui.area.", Category::Layout),
     ("ui.layout.", Category::Layout),
@@ -346,7 +347,7 @@ const COMMAND: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 14] = [
+pub const SETTINGS_SECTIONS: [&str; 15] = [
     "general",
     "audio",
     "appearance",
@@ -361,6 +362,7 @@ pub const SETTINGS_SECTIONS: [&str; 14] = [
     "virtual_camera",
     "remote_control",
     "ai_tools",
+    "guests",
 ];
 
 /// A picker's choice: optional, because the bare picker id opens the list.
@@ -2239,6 +2241,32 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Output,
         kind: action("replay.save"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    // The guest window (ADR-0139 phase 1d): run in the app, which opens the window; the
+    // pairing itself goes through the `guest.*` control-API methods.
+    Entry {
+        id: "ui.guest.share",
+        title: "Share program...",
+        tooltip: "Send the program to another RBS over a direct connection (ADR-0139)",
+        icon: Some("link"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("ui.guest.share"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.guest.add",
+        title: "Add guest...",
+        tooltip: "Receive another RBS's program as a source, from its invite code (ADR-0139)",
+        icon: Some("user"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("ui.guest.add"),
         params: &[],
         checkable: false,
         fixed: &[],

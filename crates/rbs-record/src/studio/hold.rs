@@ -262,6 +262,15 @@ pub(super) struct HoldView {
 }
 
 impl Studio {
+    /// The hold scene bound on `canvas` now (not fallen back or released), if any:
+    /// what a stream of the canvas draws while it holds with a scene.
+    pub fn held_scene(&self, canvas: CanvasId) -> Option<SceneId> {
+        self.hold_scenes
+            .get(&canvas)
+            .filter(|r| r.fallback.is_none() && !r.released)
+            .map(|r| r.scene)
+    }
+
     /// The hold scenes the binder binds now: one per canvas, those not fallen back
     /// or released.
     pub(super) fn hold_requests(&self) -> BTreeMap<CanvasId, HoldScene> {

@@ -4,6 +4,7 @@
 //! its invariant.
 
 mod cf;
+pub(crate) mod decode;
 mod session;
 
 use std::sync::OnceLock;
@@ -19,6 +20,7 @@ use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::CodecId;
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
+pub use decode::{VideoToolboxDecoderFactory, VtH264Decoder};
 pub use session::VideoToolboxSession;
 
 /// Picture limits the adapter declares: 4096x2304 is what every Apple silicon media

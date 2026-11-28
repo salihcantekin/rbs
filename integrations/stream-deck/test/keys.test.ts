@@ -6,7 +6,7 @@ import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
 import { positionOf, volumeAt, volumeText } from "../src/fader.js";
 import { press, turnVolume } from "../src/press.js";
-import { type Elapsed, dialView, filterName, formatElapsed, jobDone, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
+import { type Elapsed, dialView, filterName, formatElapsed, jobDone, keepsLook, look, rememberedName, renderKey, restingLook, stateIndex, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
 
 const ready = { state: "ready" } as const;
@@ -109,8 +109,35 @@ describe("renderKey", () => {
 		expect(jobDone("studio", {}, state, "off")).toBe(true);
 		expect(jobDone("marker", {}, state, "on")).toBe(false);
 	});
-	it("shows the link state instead of RBS state when not ready", () => {
-		expect(svg("scene", { scene: "1" }, state, { state: "unreachable" })).toContain(">connected<");
+	it("keeps the usual look while RBS is not reachable, and shows the link state only on a press", () => {
+		const ctx = { elapsed: noElapsed, liveSince: 0, now: 0, titled: false };
+		const off = { state: "unreachable" } as const;
+		const scene = renderKey("scene", { scene: "1", sceneName: "Main" }, off, {}, ctx);
+		expect(scene).toContain(">Main<");
+		expect(scene).not.toContain("connected");
+		expect(renderKey("scene", { scene: "1" }, { state: "connecting" }, {}, ctx)).toContain(">Scene<");
+		expect(renderKey("record", {}, off, {}, ctx)).toContain(">Record<");
+		expect(renderKey("source-visible", { source: "7", sourceName: "Camera" }, off, {}, ctx)).not.toContain("Not in scene");
+		expect(renderKey("mute", { source: "8", label0: "My mic" }, off, {}, ctx)).toContain(">My mic<");
+		expect(renderKey("scene", { scene: "1", sceneName: "Main" }, off, {}, ctx, true)).toContain(">connected<");
+		expect(renderKey("scene", { scene: "1" }, { state: "idle" }, {}, ctx, true)).toContain(">connected<");
+	});
+	it("a resting key has no live state", () => {
+		const k = restingLook("stream", { mode: "on" }, { elapsed: noElapsed, liveSince: 0, now: 0, titled: false });
+		expect(k).toMatchObject({ tone: "neutral", ring: false, dot: false, sub: undefined });
+	});
+	it("remembers the names a key shows while RBS is not reachable", () => {
+		const libs: ViewState = { ...state, collections: { entries: [{ id: "c1", name: "Show" }], current: "c1" } };
+		expect(rememberedName("scene", { scene: "2" }, state)).toEqual({ sceneName: "Chat" });
+		expect(rememberedName("scene", { scene: "2", sceneName: "Chat" }, state)).toBeUndefined();
+		expect(rememberedName("mute", { source: "8" }, state)).toEqual({ sourceName: "Mic" });
+		expect(rememberedName("mute", { source: "master" }, state)).toBeUndefined();
+		expect(rememberedName("collection", { entry: "c1" }, libs)).toEqual({ sourceName: "Show" });
+		expect(rememberedName("scene", { scene: "9" }, state)).toBeUndefined();
+	});
+	it("keeps showing link states the user must fix", () => {
+		expect(keepsLook({ state: "unreachable" })).toBe(true);
+		expect(keepsLook({ state: "auth_failed" })).toBe(false);
 		expect(svg("record", {}, state, { state: "incompatible", detail: "server_too_old" })).toContain(">Update RBS<");
 		expect(svg("stream", {}, state, { state: "no_token" })).toContain(">Set token<");
 	});

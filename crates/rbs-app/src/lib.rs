@@ -26,6 +26,9 @@
 //! - [`latest`]: the latest-only frame hand-off to the UI thread (stability plan WP-J).
 //! - [`recent_targets`]: the last targets picked per source type (`recent-targets.toml`, ADR-0077).
 //! - [`replay_settings`]: Settings › Recording › Replay buffer and `replay.toml` (ADR-0088).
+//! - [`guest_settings`]: Settings › Guests and `guest.toml` (ADR-0139).
+//! - [`guest_view`]: the Share and Add guest window's pages and the control-API calls it
+//!   makes (ADR-0139 phase 1d).
 //! - [`vcam_settings`]: Settings › Virtual camera and `vcam.toml` (ADR-0066).
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
@@ -82,6 +85,8 @@ pub mod theme_hints;
 pub mod thumbnail;
 pub use rbs_studio_host::ui_thread;
 pub use rbs_studio_host::user_session;
+pub mod guest_settings;
+pub mod guest_view;
 pub mod vcam_settings;
 pub use rbs_studio_host::vertical_outputs;
 #[cfg(windows)]

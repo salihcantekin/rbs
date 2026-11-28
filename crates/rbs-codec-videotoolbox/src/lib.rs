@@ -1,5 +1,6 @@
 //! VideoToolbox adapter for the RBS encoder port (`docs/specs/output-ports.md`): H.264
-//! and HEVC on macOS.
+//! and HEVC on macOS; and a live H.264 decoder for the video decoder port
+//! ([`VideoToolboxDecoderFactory`], `docs/specs/backend-ports.md`, "Live video decode").
 //!
 //! # Input
 //!
@@ -53,6 +54,9 @@ pub const ADAPTER_ID: &str = "org.rbs.codec.videotoolbox";
 /// Id of the adapter that also offers Apple's software encoders.
 pub const SOFTWARE_ADAPTER_ID: &str = "org.rbs.codec.videotoolbox-software";
 
+/// Id of the live H.264 decoder adapter (ADR-0139 phase 1c).
+pub const DECODER_ADAPTER_ID: &str = "org.rbs.codec.videotoolbox-h264-decode";
+
 /// Frames a session accepts before `submit` returns `Busy`: frames VideoToolbox is
 /// still encoding plus packets not yet drained. Also the number of lease slots, so a
 /// session holds at most this many exporter surfaces.
@@ -84,20 +88,23 @@ pub struct SessionStats {
 #[cfg(target_os = "macos")]
 mod mac;
 
-pub use platform::VideoToolboxFactory;
+pub use platform::{VideoToolboxDecoderFactory, VideoToolboxFactory};
 
 /// The concrete session type, for callers that want its [`SessionStats`].
 #[cfg(target_os = "macos")]
-pub use mac::VideoToolboxSession;
+pub use mac::{VideoToolboxSession, VtH264Decoder};
 
 #[cfg(target_os = "macos")]
 mod platform {
-    pub use crate::mac::VideoToolboxFactory;
+    pub use crate::mac::{VideoToolboxDecoderFactory, VideoToolboxFactory};
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use rbs_codec::{CreateError, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory};
+    use rbs_codec::{
+        CreateError, VideoDecoder, VideoDecoderConfig, VideoDecoderFactory, VideoEncoder,
+        VideoEncoderConfig, VideoEncoderFactory,
+    };
     use rbs_core::capability::CapabilitySet;
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
@@ -140,6 +147,40 @@ mod platform {
 
     impl VideoEncoderFactory for VideoToolboxFactory {
         fn create(&self, _: &VideoEncoderConfig) -> Result<Box<dyn VideoEncoder>, CreateError> {
+            Err(CreateError::Unsupported {
+                what: "VideoToolbox is only available on macOS".into(),
+            })
+        }
+    }
+
+    /// Factory of the VideoToolbox live H.264 decoder. Unavailable on this platform: it
+    /// probes to an empty set and refuses every session.
+    #[derive(Debug, Default)]
+    pub struct VideoToolboxDecoderFactory;
+
+    impl VideoToolboxDecoderFactory {
+        /// Creates the factory.
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl AdapterFactory for VideoToolboxDecoderFactory {
+        fn id(&self) -> AdapterId {
+            AdapterId::new(crate::DECODER_ADAPTER_ID)
+        }
+
+        fn display_name(&self) -> &str {
+            "VideoToolbox H.264 decoder (unavailable on this platform)"
+        }
+
+        fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+            Ok(CapabilitySet::new())
+        }
+    }
+
+    impl VideoDecoderFactory for VideoToolboxDecoderFactory {
+        fn create(&self, _: &VideoDecoderConfig) -> Result<Box<dyn VideoDecoder>, CreateError> {
             Err(CreateError::Unsupported {
                 what: "VideoToolbox is only available on macOS".into(),
             })

@@ -1438,6 +1438,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "permissions" => 11,
         "add_ons" => 12,
         "advanced" => 13,
+        "guests" => 14,
         _ => return None,
     })
 }
@@ -1699,6 +1700,9 @@ pub enum Run {
     Window(WindowCommand),
     /// Open the Import from OBS window (`ui.collection.import_obs`, ADR-0131).
     OpenObsImport,
+    /// Open the guest window to share (`true`, `ui.guest.share`) or to add a guest
+    /// (`false`, `ui.guest.add`) (ADR-0139).
+    OpenGuest(bool),
     /// Scene edit undo (`true`) or redo.
     UndoEdit(bool),
     /// Load and switch to the named workspace.
@@ -2007,6 +2011,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.app_menu.open" => Run::OpenAppMenu,
         base if base.starts_with("ui.window.") => Run::Window(WindowCommand::from_id(base)?),
         "ui.collection.import_obs" => Run::OpenObsImport,
+        "ui.guest.share" => Run::OpenGuest(true),
+        "ui.guest.add" => Run::OpenGuest(false),
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "ui.panel.auto_hide" => Run::AutoHide(panel_of(&id)?),
         "ui.workspace.save" => Run::SaveWorkspace,

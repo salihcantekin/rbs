@@ -1,6 +1,6 @@
 # Guest source
 
-- Status: Draft (2026-11-28), revised after two independent reviews (below). It is not a contract until a review approves the revision and the owner accepts it.
+- Status: Accepted (2026-11-28) after three independent reviews (below) and the owner's approval. The port's receiving half, the adapter's receive changes and the worker logic are on the branch `claude/project-thread-hdoagp`, not yet on `main`: the adapter part touches a hot path and waits for the owner's sign-off with numbers (rule 12). The guest source node is not built yet.
 - Decisions: [ADR-0139](../adr/0139-remote-guests-rbs-to-rbs-over-webrtc.md) decisions 1, 2, 6, 11, 12 and 14 (phase 1c).
 - Owner crates:
   - `rbs-peer` (port): the receiving half, `PeerReceiver`.
@@ -252,7 +252,7 @@ Second independent review, 2026-11-28, given the revised draft and the branch's 
 
 - **B1.** The clock-map tests were wrong: 30 fps frames now start each second exactly, the far-off case makes a whole second late, and resync counts are exact.
 - **B2.** Only capture times from the future are outliers. Late frames feed the map and meet the jitter buffer's late drop, so a route step or a stall cannot end the pairing. A pipeline test is listed.
-- **B3.** `peer-port.md` now describes the receiver in the port. ADR-0139 decision 11 says network I/O and depacketizing run on the guest source's worker, while decision 2's threading puts both on the adapter's owner thread. This spec follows decision 2. The contradiction is an open item for the owner: fix decision 11 in place, or confirm.
+- **B3.** `peer-port.md` now describes the receiver in the port. ADR-0139 decision 11 said network I/O and depacketizing run on the guest source's worker, while decision 2's threading puts both on the adapter's owner thread. This spec follows decision 2; the owner chose it, and decision 11 is fixed in place (2026-11-28).
 - **B4.** The adapter counts every drop before `poll` with its bytes (`Dropped`), including the engine queue's, and marks the next frame not contiguous. The rate limit counts those bytes.
 - **Non-blocking points.**
   - The fps limit has a 10 % margin over 2 s.
@@ -277,3 +277,7 @@ Third independent review, 2026-11-28. Verdict: changes requested; B1 and B3 reso
 - **N4.** The test now measured a 4.8 ms error while the drift fit carried a step. The level rule keeps the step out of the fit, and the test asserts the map stays within 3 ms over seconds 60 to 90 after the step.
 - **N5.** `None` from `take_receiver` means the adapter has no receiving half.
 - **N6.** The gate's drops are named as not part of `dropped`.
+
+### Owner approval
+
+Salih, 2026-11-28, in the project chat, on the morning list item "accept the guest source spec": "Onaylıyorum." ("I approve.") and, on the decision 11 question, "Adapter de kalsın." ("Let it stay in the adapter.")

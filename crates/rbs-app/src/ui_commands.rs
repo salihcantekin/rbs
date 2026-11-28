@@ -276,6 +276,7 @@ fn run_ui(
         | menu_bar::Run::OpenAppMenu
         | menu_bar::Run::Window(_)
         | menu_bar::Run::OpenObsImport
+        | menu_bar::Run::OpenGuest(_)
         | menu_bar::Run::Workspace(_)
         | menu_bar::Run::Panel(_)
         | menu_bar::Run::Layout(_)

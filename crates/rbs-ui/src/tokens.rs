@@ -191,6 +191,11 @@ pub const LENGTHS: &[&str] = &[
     "size.toast.wide",
     "size.toast.edge",
     "size.first-run.w",
+    "size.guest.w",
+    "size.guest.code-h",
+    "size.guest.word-h",
+    "size.guest.step-dot",
+    "size.guest.status-dot",
     "size.projector.resize-edge",
 ];
 

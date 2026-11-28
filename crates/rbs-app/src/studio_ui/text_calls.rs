@@ -33,6 +33,10 @@ impl StudioUi {
         result: Result<Response, ApiError>,
         out: &mut super::Applied,
     ) {
+        // The guest window's own questions are answered to it (ADR-0139 phase 1d).
+        let Some(result) = crate::guest_page::answered(ticket, result) else {
+            return;
+        };
         // The fixed tickets first: they sit near `u64::MAX`, so they carry the edit
         // mark's bit too.
         if ticket == super::add_calls::BROWSER_TICKET {

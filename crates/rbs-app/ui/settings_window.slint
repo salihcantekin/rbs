@@ -6,6 +6,7 @@ import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slin
 import { AppearanceSettings } from "appearance.slint";
 import { ShortcutsSettings } from "shortcuts.slint";
 import { VirtualCameraSettings } from "vcam.slint";
+import { GuestsSettings } from "guests.slint";
 import { AudioSettings } from "audio.slint";
 import { RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings, PermissionsSettings, AddOnsSettings, AdvancedSettings } from "studio_settings.slint";
 import { Menus, Shell, Sections, Experience, SettingsFind, IconName, SettingsScroll, SettingsHit, Appearance, Shortcuts, Studio } from "base/types.slint";
@@ -24,8 +25,24 @@ export component SettingsWindow inherits Window {
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
     // 5 Appearance (second), 6 Shortcuts (third), 7 Global sources, 8 Virtual camera,
-    // 9 Audio, 10 AI tools.
+    // 9 Audio, 10 AI tools, 14 Guests.
     in-out property <int> section: 1;
+    // Guests page (guests.slint): what Rust pushes in, and what the page asks.
+    in property <bool> guest-sharing;
+    in property <string> guest-share-text;
+    in property <string> guest-share-state;
+    in property <int> guest-share-tone;
+    in-out property <bool> guest-check-phrase: true;
+    in-out property <int> guest-lifetime: 2;
+    in property <[string]> guest-lifetimes;
+    in-out property <bool> guest-local-only;
+    in property <bool> guest-can-add;
+    in property <string> guest-add-text;
+    callback guest-shown();
+    callback guest-open-share();
+    callback guest-stop-share();
+    callback guest-settings-changed();
+    callback guest-refresh();
     // The section list shows icons only (the collapse button at its top).
     in-out property <bool> nav-collapsed;
     // Escape was pressed: the window closes, as with its close button.
@@ -259,25 +276,28 @@ export component SettingsWindow inherits Window {
             MenuItem { title: Menus.titles[39]; icon: Menus.icons[39]; enabled: Menus.enabled[39]; checkable: true; checked: Menus.checked[39]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[40]; icon: Menus.icons[40]; enabled: Menus.enabled[40]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[41]; icon: Menus.icons[41]; enabled: Menus.enabled[41]; activated => { Menus.run("marker.add"); } }
+            MenuItem { title: Menus.titles[41]; icon: Menus.icons[41]; enabled: Menus.enabled[41]; activated => { Menus.run("ui.guest.share"); } }
+            MenuItem { title: Menus.titles[42]; icon: Menus.icons[42]; enabled: Menus.enabled[42]; activated => { Menus.run("ui.guest.add"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[43]; icon: Menus.icons[43]; enabled: Menus.enabled[43]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[42];
-                icon: Menus.icons[42];
-                enabled: Menus.enabled[42];
+                title: Menus.titles[44];
+                icon: Menus.icons[44];
+                enabled: Menus.enabled[44];
                 for c in Menus.choices[19]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[43]; icon: Menus.icons[43]; enabled: Menus.enabled[43]; checkable: true; checked: Menus.checked[43]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[45]; icon: Menus.icons[45]; enabled: Menus.enabled[45]; checkable: true; checked: Menus.checked[45]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[44]; icon: Menus.icons[44]; enabled: Menus.enabled[44]; activated => { Menus.run("ui.window.minimize"); } }
-            MenuItem { title: Menus.titles[45]; icon: Menus.icons[45]; enabled: Menus.enabled[45]; activated => { Menus.run("ui.window.zoom"); } }
+            MenuItem { title: Menus.titles[46]; icon: Menus.icons[46]; enabled: Menus.enabled[46]; activated => { Menus.run("ui.window.minimize"); } }
+            MenuItem { title: Menus.titles[47]; icon: Menus.icons[47]; enabled: Menus.enabled[47]; activated => { Menus.run("ui.window.zoom"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[46]; icon: Menus.icons[46]; enabled: Menus.enabled[46]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[48]; icon: Menus.icons[48]; enabled: Menus.enabled[48]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -449,6 +469,13 @@ export component SettingsWindow inherits Window {
                         current: root.section == 8;
                         activated => { root.section = 8; }
                     }
+                    SettingsNavItem {
+                        text: @tr("Guests");
+                        icon: IconName.user;
+                        compact: root.nav-collapsed;
+                        current: root.section == 14;
+                        activated => { root.section = 14; }
+                    }
                     Rectangle { height: Tokens.space-2; }
                     if !root.nav-collapsed: SettingsNavGroup { title: @tr("Control"); }
                     if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -510,8 +537,8 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : root.section == 11 ? "settings.permissions." : root.section == 12 ? "settings.add-ons." : root.section == 13 ? "settings.advanced." : "";
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : root.section == 11 ? @tr("Permissions") : root.section == 12 ? @tr("Add-ons") : root.section == 13 ? @tr("Advanced") : @tr("General");
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 14 ? "settings.guests." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : root.section == 11 ? "settings.permissions." : root.section == 12 ? "settings.add-ons." : root.section == 13 ? "settings.advanced." : "";
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 14 ? @tr("Guests") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : root.section == 11 ? @tr("Permissions") : root.section == 12 ? @tr("Add-ons") : root.section == 13 ? @tr("Advanced") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
@@ -520,6 +547,7 @@ export component SettingsWindow inherits Window {
                             : root.section == 6 ? @tr("Keys that run commands, in RBS and, for global shortcuts, in any app.")
                             : root.section == 7 ? @tr("Sources heard and shown in every scene, such as your microphone.")
                             : root.section == 8 ? @tr("Meeting apps can pick RBS as a camera.")
+                            : root.section == 14 ? @tr("Send your program to another RBS, or receive one, over a direct connection.")
                             : root.section == 9 ? @tr("Listening on this computer: the monitor's device and volume.")
                             : root.section == 10 ? @tr("Let AI tools on this computer use RBS, within limits you set.")
                             : root.section == 11 ? @tr("What this computer lets RBS use. RBS asks the first time you add a source or filter that needs it.")
@@ -536,6 +564,23 @@ export component SettingsWindow inherits Window {
                     if root.section == 6: ShortcutsSettings { }
                     if root.section == 7: GlobalSourcesSettings { }
                     if root.section == 8: VirtualCameraSettings { }
+                    if root.section == 14: GuestsSettings {
+                        sharing: root.guest-sharing;
+                        share-text: root.guest-share-text;
+                        share-state: root.guest-share-state;
+                        share-tone: root.guest-share-tone;
+                        check-phrase <=> root.guest-check-phrase;
+                        lifetime <=> root.guest-lifetime;
+                        lifetimes: root.guest-lifetimes;
+                        local-only <=> root.guest-local-only;
+                        can-add: root.guest-can-add;
+                        add-text: root.guest-add-text;
+                        shown => { root.guest-shown(); }
+                        open-share => { root.guest-open-share(); }
+                        stop-share => { root.guest-stop-share(); }
+                        settings-changed => { root.guest-settings-changed(); }
+                        refresh => { root.guest-refresh(); }
+                    }
                     if root.section == 9: AudioSettings { }
                     if root.section == 10: AiToolsSettings { }
                     if root.section == 11: PermissionsSettings { }

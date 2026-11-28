@@ -5895,8 +5895,10 @@ dependencies = [
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-video-toolbox",
+ "rbs-capture",
  "rbs-codec",
  "rbs-core",
+ "rbs-gpu",
  "rbs-media-format",
 ]
 

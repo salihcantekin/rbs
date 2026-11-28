@@ -6,26 +6,52 @@ use objc2_core_foundation::{
 };
 use objc2_core_media::CMFormatDescription;
 use objc2_core_media::kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms;
-use objc2_video_toolbox::{VTCompressionSession, VTSessionSetProperty};
+use objc2_video_toolbox::{VTCompressionSession, VTDecompressionSession, VTSessionSetProperty};
 
 /// A VideoToolbox status code (`OSStatus`).
 pub(crate) type Status = i32;
 
+/// A VideoToolbox session type (`VTSessionRef`): only the compression and the
+/// decompression session implement it, so the setters below never get another CFType.
+pub(crate) trait VtSession: sealed::Sealed {
+    /// The session as the `VTSession` (a CFType) VideoToolbox's property calls take.
+    fn as_vt_session(&self) -> &CFType;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for objc2_video_toolbox::VTCompressionSession {}
+    impl Sealed for objc2_video_toolbox::VTDecompressionSession {}
+}
+
+impl VtSession for VTCompressionSession {
+    fn as_vt_session(&self) -> &CFType {
+        self
+    }
+}
+
+impl VtSession for VTDecompressionSession {
+    fn as_vt_session(&self) -> &CFType {
+        self
+    }
+}
+
 /// Sets one session property.
-pub(crate) fn set_property(
-    session: &VTCompressionSession,
+pub(crate) fn set_property<S: VtSession>(
+    session: &S,
     key: &CFString,
     value: &CFType,
 ) -> Result<(), Status> {
-    // SAFETY: a compression session is a VTSession (a CFType); key and value are valid
-    // CoreFoundation objects for the duration of the call, which retains what it keeps.
-    let status = unsafe { VTSessionSetProperty(session, key, Some(value)) };
+    // SAFETY: `session` is a compression or decompression session (`VtSession` is
+    // sealed), so a VTSession; key and value are valid CoreFoundation objects for the
+    // duration of the call, which retains what it keeps.
+    let status = unsafe { VTSessionSetProperty(session.as_vt_session(), key, Some(value)) };
     if status == 0 { Ok(()) } else { Err(status) }
 }
 
 /// Sets a boolean property.
-pub(crate) fn set_bool(
-    session: &VTCompressionSession,
+pub(crate) fn set_bool<S: VtSession>(
+    session: &S,
     key: &CFString,
     value: bool,
 ) -> Result<(), Status> {
@@ -33,20 +59,12 @@ pub(crate) fn set_bool(
 }
 
 /// Sets an integer property.
-pub(crate) fn set_i64(
-    session: &VTCompressionSession,
-    key: &CFString,
-    value: i64,
-) -> Result<(), Status> {
+pub(crate) fn set_i64<S: VtSession>(session: &S, key: &CFString, value: i64) -> Result<(), Status> {
     set_property(session, key, &CFNumber::new_i64(value))
 }
 
 /// Sets a floating-point property.
-pub(crate) fn set_f64(
-    session: &VTCompressionSession,
-    key: &CFString,
-    value: f64,
-) -> Result<(), Status> {
+pub(crate) fn set_f64<S: VtSession>(session: &S, key: &CFString, value: f64) -> Result<(), Status> {
     set_property(session, key, &CFNumber::new_f64(value))
 }
 
