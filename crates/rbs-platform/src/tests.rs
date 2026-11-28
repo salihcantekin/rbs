@@ -72,7 +72,11 @@ fn every_registry_lists_its_adapters_in_order() {
             rbs_mux_mpegts::ADAPTER_ID,
         ])
     );
-    let mut audio_encoders = vec![rbs_codec_pcm::ADAPTER_ID, rbs_codec_flac::ADAPTER_ID];
+    let mut audio_encoders = vec![
+        rbs_codec_pcm::ADAPTER_ID,
+        rbs_codec_flac::ADAPTER_ID,
+        rbs_codec_opus::ADAPTER_ID,
+    ];
     audio_encoders.extend(platform_audio);
     assert_eq!(ids(&a.audio_encoders), strings(&audio_encoders));
     assert_eq!(
@@ -81,6 +85,7 @@ fn every_registry_lists_its_adapters_in_order() {
             rbs_transport_file::ADAPTER_ID,
             rbs_transport_rtmp::ADAPTER_ID,
             rbs_transport_srt::ADAPTER_ID,
+            rbs_peer_str0m::SHARE_TRANSPORT_ID,
         ])
     );
     assert_eq!(ids(&a.video_encoders), strings(&video));
